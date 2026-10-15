@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tonelith</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32.png">
+<link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#1f1f22">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="top">
+  <button id="brandBtn" class="brand" title="About Tonelith"><img src="/static/icons/icon-96.png" alt="" width="30" height="30" draggable="false"><span>Tonelith</span></button>
+  <div class="group">
+    <button id="libBtn" class="dd" aria-haspopup="listbox" aria-expanded="false" title="Switch library">
+      <span id="libBtnName" class="ddName"></span><span id="libBtnCount" class="ddCount"></span><span class="ddChev">▾</span>
+    </button>
+    <button id="manageLibs" class="pink" title="Add, rename and delete libraries">Manage libraries</button>
+  </div>
+  <span class="navGap"></span>
+  <nav class="group tabs">
+    <button id="tabLib" class="active">Library</button>
+    <button id="tabDev">Develop</button>
+  </nav>
+  <span class="navGap"></span>
+  <div class="group">
+    <button id="addFiles" class="green">Add files</button>
+    <button id="addFolder" class="green">Add folder</button>
+    <span class="btnGap"></span>
+    <button id="actionsBtn" class="dd actions" aria-haspopup="menu" aria-expanded="false" title="Copy and paste settings, add the selection to a library">Actions <span class="ddChev">▾</span></button>
+    <span class="btnGap"></span>
+    <button id="exportBtn" class="primary">Export</button>
+  </div>
+  <div class="spacer"></div>
+  <div id="queue" class="group" hidden>
+    <span id="qLbl"></span>
+    <progress id="qBar" value="0" max="1"></progress>
+    <button id="qCancel" title="Cancel the export queue">Cancel</button>
+    <button id="qClose" title="Dismiss" hidden>✕</button>
+  </div>
+  <div class="group">
+    <button id="cacheBtn" class="red" title="Temporary data folder">Temp</button>
+  </div>
+</header>
+
+<main>
+  <section id="libraryView">
+    <div class="toolbar">
+      <span id="countInfo"></span>
+      <span class="spacer"></span>
+      <button id="selAll">Select all</button>
+      <button id="removeSel" title="Remove from library (files stay on disk)">Remove from library</button>
+      <label>Size <input id="thumbSize" type="range" min="120" max="360" value="190"></label>
+    </div>
+    <div id="grid"></div>
+    <div id="emptyMsg" hidden>This library is empty.<br>Use <b>Add files</b> or <b>Add folder</b> to add images from anywhere on your computer.</div>
+  </section>
+
+  <section id="developView" hidden>
+    <div id="stage">
+      <img id="mainImg" alt="" draggable="false">
+      <div id="origWrap" hidden><img id="origImg" alt="" draggable="false"></div>
+      <div id="stageMsg"></div>
+      <span id="tagOrig" class="abTag" hidden>ORIGINAL</span>
+      <span id="tagCorr" class="abTag" hidden>CORRECTED</span>
+      <div id="splitLine" hidden title="Drag left or right"><div class="grip">◀ ▶</div></div>
+      <button id="abBtn" title="Compare original and corrected (A)">A | B</button>
+      <div id="beforeTag" hidden>BEFORE</div>
+      <div id="busy" hidden></div>
+      <div id="zoomBar" title="Scroll to zoom, drag to pan, double-click toggles 100%">
+        <button id="zoomOut" title="Zoom out (-)">−</button>
+        <span id="zoomLbl">Fit</span>
+        <button id="zoomIn" title="Zoom in (+)">＋</button>
+        <button id="zoomFit" class="active" title="Fit to window (0)">Fit</button>
+        <button id="zoom100" title="100% (Z)">100%</button>
+      </div>
+    </div>
+    <div id="filmstrip"></div>
+    <aside id="panel">
+      <div id="panelTop">
+        <div class="hist"><canvas id="hist" width="256" height="90"></canvas></div>
+        <div id="imgInfo"></div>
+        <div class="panelActions">
+          <button id="resetAll">Reset all</button>
+        </div>
+      </div>
+      <div id="sliders"></div>
+    </aside>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<!-- Open from disk -->
+<dialog id="fsDlg">
+  <h3 id="fsTitle">Open</h3>
+  <div class="fsBar">
+    <button id="fsUp">↑ Up</button>
+    <input id="fsPath" type="text" spellcheck="false" placeholder="Type or paste a path, press Enter">
+    <button id="fsGo">Go</button>
+  </div>
+  <div class="fsBody">
+    <div id="fsPlaces"></div>
+    <div id="fsList"></div>
+  </div>
+  <div class="fsOpts">
+    <button id="fsSelAll" title="Select every supported image in this folder">Select all in folder</button>
+    <button id="fsSelNone">Clear</button>
+    <label><input id="fsAll" type="checkbox"> Show all files</label>
+    <label id="fsRecWrap"><input id="fsRec" type="checkbox"> Include sub-folders</label>
+    <span class="spacer"></span><span id="fsSel"></span>
+  </div>
+  <div class="dlgBtns">
+    <button id="fsCancel">Cancel</button>
+    <button id="fsOk" class="primary">Open</button>
+  </div>
+</dialog>
+
+<!-- Manage libraries -->
+<dialog id="libDlg">
+  <div class="libHead">
+    <h3>Manage libraries</h3>
+    <button id="libAdd" class="primary">＋ Add new library</button>
+  </div>
+  <div class="libGrid">
+    <div id="libLeft">
+      <input id="libSearch" type="text" placeholder="Search libraries…" spellcheck="false" autocomplete="off">
+      <div id="libList"></div>
+    </div>
+    <div id="libEdit">
+      <div id="libEditBody">
+        <label class="fld">Library name <input id="libName" type="text" spellcheck="false"></label>
+        <div class="locRow">
+          <span class="locLabel">Location</span>
+          <button id="locBtn" title="Fill in the city, province or state, and country from this device's location">Use my location</button>
+        </div>
+        <div class="locFields">
+          <input id="libCity" type="text" placeholder="City" aria-label="City" spellcheck="false" autocomplete="off">
+          <input id="libRegion" type="text" placeholder="Province / State" aria-label="Province or state" spellcheck="false" autocomplete="off">
+          <input id="libCountry" type="text" placeholder="Country" aria-label="Country" spellcheck="false" autocomplete="off">
+        </div>
+        <div id="locMsg" role="status"></div>
+        <div class="libPreview">
+          <div id="pvLabel"></div>
+          <div class="pvBox"><div id="pvGrid"></div></div>
+        </div>
+      </div>
+      <div id="libNone" hidden>Select a library on the left, or add a new one.</div>
+      <div class="libFoot">
+        <button id="libDelete" class="danger">Delete library…</button>
+        <span class="libFootRight">
+          <button id="libOpen">Open this library</button>
+          <button id="libClose" class="primary">Close</button>
+        </span>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<!-- About -->
+<dialog id="aboutDlg" aria-label="About Tonelith">
+  <div class="aboutGrid">
+    <div class="aboutLogo"><img src="/static/icons/icon-512.png" alt="Tonelith logo" draggable="false"></div>
+    <div class="aboutPanel">
+      <div id="aboutInfo"></div>
+      <div class="aboutFoot"><button id="aboutClose" class="primary">Close</button></div>
+    </div>
+  </div>
+</dialog>
+
+<!-- Confirmations, prompts and notices (used instead of the browser's own dialogs) -->
+<dialog id="msgDlg">
+  <h3 id="msgTitle"></h3>
+  <div id="msgBody"></div>
+  <input id="msgInput" type="text" spellcheck="false" autocomplete="off" hidden>
+  <div class="dlgBtns"><button id="msgCancel">Cancel</button><button id="msgOk" class="primary">OK</button></div>
+</dialog>
+
+<!-- Library dropdown -->
+<div id="libMenu" hidden>
+  <input id="libMenuSearch" type="text" placeholder="Search libraries…" spellcheck="false" autocomplete="off">
+  <div id="libMenuList" role="listbox"></div>
+</div>
+
+<!-- Right-click menu -->
+<div id="ctxMenu" role="menu" hidden>
+  <div id="ctxHead"></div>
+  <button class="ctxItem" role="menuitem" data-act="copy"><span>Copy settings</span><kbd id="kCopy"></kbd></button>
+  <button class="ctxItem" role="menuitem" data-act="paste"><span>Paste settings</span><kbd id="kPaste"></kbd></button>
+  <div class="ctxSep"></div>
+  <button class="ctxItem" role="menuitem" data-act="feature"><span id="ctxFeatureLbl">Mark as featured</span><span class="ctxStar">★</span></button>
+  <button class="ctxItem" role="menuitem" data-act="addlib"><span>Add to library…</span></button>
+</div>
+
+<!-- Right-click: add the selection to a library -->
+<dialog id="addLibDlg">
+  <h3>Add to library</h3>
+  <p id="addLibInfo"></p>
+  <input id="addLibSearch" type="text" placeholder="Search libraries…" spellcheck="false" autocomplete="off">
+  <div id="addLibList"></div>
+  <div class="dlgBtns"><button id="addLibOk" class="primary" disabled>OK</button><button id="addLibCancel">Cancel</button></div>
+</dialog>
+
+<!-- Duplicate decision when copying between libraries -->
+<dialog id="dupDlg">
+  <h3>Some images already exist</h3>
+  <p id="dupMsg"></p>
+  <p><b>Overwrite existing</b> replaces the settings of the entries already there with the copied settings.<br>
+     <b>Create new copies</b> adds a second entry alongside each existing one, named "(copy)".</p>
+  <p>Your choice applies to all <b id="dupN"></b> in this copy.</p>
+  <div class="dlgBtns">
+    <button id="dupCancel">Cancel</button>
+    <button id="dupCopy">Create new copies</button>
+    <button id="dupOver" class="primary">Overwrite existing</button>
+  </div>
+</dialog>
+
+<!-- Copy groups -->
+<dialog id="copyDlg">
+  <h3>Copy settings</h3>
+  <div id="copyGroups"></div>
+  <div class="dlgBtns"><button id="copyCancel">Cancel</button><button id="copyOk" class="primary">Copy</button></div>
+</dialog>
+
+<!-- Export -->
+<dialog id="expDlg">
+  <h3>Export</h3>
+  <div class="form">
+    <label>Images
+      <span class="radios">
+        <label><input type="radio" name="expScope" value="selected" checked> Selected (<b id="expSelN">0</b>)</label>
+        <label><input type="radio" name="expScope" value="all"> All in library (<b id="expAllN">0</b>)</label>
+      </span>
+    </label>
+    <label>Format
+      <select id="expFmt">
+        <option value="jpeg">JPEG</option><option value="png">PNG</option>
+        <option value="tiff">TIFF</option><option value="webp">WebP</option>
+      </select>
+    </label>
+    <label id="expQRow">Quality <span class="inl"><input id="expQ" type="range" min="40" max="100" value="92"><b id="expQv">92</b></span></label>
+    <label id="expBRow">Bit depth
+      <select id="expBits"><option value="8">8-bit</option><option value="16">16-bit</option></select>
+    </label>
+    <label>Resize long edge
+      <span class="inl"><input id="expResizeOn" type="checkbox"><input id="expLong" type="number" min="16" value="2048"> px</span>
+    </label>
+    <label>File suffix <input id="expSuffix" type="text" value="-edit"></label>
+    <label>Destination
+      <span class="inl wide"><input id="expDest" type="text" spellcheck="false"><button id="expBrowse">Browse…</button></span>
+    </label>
+  </div>
+  <div id="expErr" class="err" hidden></div>
+  <div class="dlgBtns"><button id="expClose">Cancel</button><button id="expGo" class="primary">Add to export queue</button></div>
+</dialog>
+
+<!-- Temp folder -->
+<dialog id="cacheDlg">
+  <h3>Temporary data folder</h3>
+  <p>Decoded working copies and thumbnails are processed here. Your original files are never modified, and the catalog stores only references and settings.</p>
+  <p><code id="cachePath"></code><br><span id="cacheInfo"></span></p>
+  <div class="dlgBtns"><button id="cacheClose">Close</button><button id="cacheClear">Clear temp data</button></div>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

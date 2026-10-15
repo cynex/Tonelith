@@ -1,0 +1,6 @@
+flask
+numpy
+pillow
+pillow-heif
+opencv-python-headless
+rawpy
