@@ -4,6 +4,38 @@ Tonelith is a small, local photo developer that runs on your own computer. It is
 browser-based interface: you organize photos into libraries, adjust color and tone with a set of sliders, and
 export the finished images. Nothing is uploaded anywhere - the server only listens on `127.0.0.1`.
 
+## Install on macOS (Applications + Dock)
+
+1. Get the Tonelith folder onto your Mac (`git clone`, or **Code > Download ZIP** on GitHub and unzip it).
+2. In Finder, open the folder and double-click **`MacOS_Make_Build_And_Dock.command`**.
+   If macOS says it can't be opened, right-click it and choose **Open**, then **Open** again (or go to
+   **System Settings > Privacy & Security** and click **Open Anyway**). You only have to do this once.
+3. A Terminal window opens and:
+   1. installs what Tonelith needs (the first time only, a few minutes),
+   2. builds `Tonelith.app`,
+   3. copies it into **Applications** (your own `~/Applications` if you can't write to `/Applications`),
+   4. adds it to the **Dock**.
+4. When it says **Done**, press any key to close the window and click **Tonelith** in the Dock.
+
+It needs Python 3.10 or newer. If Python is missing, the installer offers to install it with
+[Homebrew](https://brew.sh) when Homebrew is there. Otherwise it opens the python.org download page: install Python
+3.12, then double-click the installer again.
+
+To update, get the new source and double-click the installer again. It replaces the installed app and keeps a
+single Dock icon. Because the app is built on your own Mac, it opens with a normal click and no security warning.
+
+**Using the app:** while it runs, Tonelith has an icon in the Dock. Clicking that icon opens Tonelith in your browser
+again, and **Quit** (right-click the Dock icon, or Cmd+Q) stops it. It also quits by itself shortly after you close
+the last browser tab. Your catalog and caches are kept in `~/Library/Application Support/Tonelith`, and exports and
+movie frames in `~/Pictures/Tonelith`.
+
+**If it says "permission denied":** the file lost its "executable" flag, which can happen when it is renamed,
+copied or downloaded. Fix it once in Terminal from the Tonelith folder, then double-click it again:
+
+```bash
+chmod +x MacOS_Make_Build_And_Dock.command setup.sh run.sh
+```
+
 ## Features
 
 - **Libraries** - group photos into named libraries, with optional location (city, region, country). Copy images
@@ -69,7 +101,7 @@ versions):
   anyway**.
 - **macOS (Apple Silicon)** - unzip `Tonelith-macos-arm64.zip`, then **right-click `Tonelith.app` > Open** the first
   time. It quits by itself when you close the browser window, or use Quit from its Dock icon. (On an Intel Mac, or
-  to skip the warning, build it yourself: see below.)
+  to skip the warning, build it yourself: see [Install on macOS](#install-on-macos-applications--dock).)
 
 These apps are not code-signed. They keep their data in your user folders instead of next to the program:
 the catalog and caches in `%APPDATA%\Tonelith` (Windows) or `~/Library/Application Support/Tonelith` (macOS), and
@@ -78,28 +110,8 @@ exports and extracted movie frames in `Pictures/Tonelith`.
 To build an app yourself: `pip install -r requirements.txt -r requirements-build.txt`, then
 `pyinstaller tonelith.spec --noconfirm`. The result is in `dist/` (it has to be built on the platform it is for).
 
-### Build and install on your Mac (Applications + Dock)
-
-1. In Finder, open the Tonelith folder and double-click **`Install Tonelith.command`**. If macOS says it can't be
-   opened, right-click it and choose **Open** (or **System Settings > Privacy & Security > Open Anyway**).
-2. A Terminal window builds the app (the first run takes a few minutes), copies `Tonelith.app` into
-   **Applications** and adds it to the **Dock**. Press a key to close the window when it says it's done.
-
-It needs Python 3.10 or newer. The script finds it, offers to install it with [Homebrew](https://brew.sh) if Homebrew
-is there, and otherwise opens the python.org download page; install Python 3.12 from there and double-click the file
-again. Run it again after updating the source to rebuild; it replaces the installed app and doesn't add a second Dock
-icon. An app built on your own Mac is not quarantined, so it opens with a normal click.
-
-From Terminal the same thing is:
-
-```bash
-./build_launcher.sh                    # builds dist/Tonelith.app only
-./build_launcher.sh --install          # also copies it into /Applications (~/Applications if that isn't writable)
-./build_launcher.sh --install --dock   # ...and adds it to the Dock
-```
-
-The app shows in the Dock while it runs. Clicking its Dock icon opens Tonelith in your browser again; **Quit** (Dock
-menu or Cmd+Q) stops it. It also quits by itself shortly after you close the last browser tab.
+On a Mac you can build and install it with one double-click instead: see
+[Install on macOS](#install-on-macos-applications--dock).
 
 ## Setup and running
 
@@ -212,8 +224,7 @@ favorite folders, which panel sections are open) are stored in the browser's loc
 ├── requirements.txt
 ├── requirements-build.txt   PyInstaller (only needed to build the apps)
 ├── tonelith.spec       PyInstaller recipe for the Windows and macOS apps
-├── build_launcher.sh / .bat   Build the app (macOS: --install --dock)
-├── Install Tonelith.command   macOS: double-click to build, install and add to the Dock
+├── MacOS_Make_Build_And_Dock.command   macOS: double-click to build, install and add to the Dock
 ├── .github/workflows/  Builds the apps on GitHub
 ├── setup.bat / setup.sh
 └── run.bat / run.sh
