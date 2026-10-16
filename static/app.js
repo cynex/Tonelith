@@ -533,6 +533,7 @@ function loadStage() {
   $("#stageMsg").textContent = im ? "" : "No image selected";
   renderAbort?.abort();
   view.iw = view.ih = 0; view.shown = view.origShown = null; origKey = null; layoutImage(); updateZoomUI();
+  histKey = null;
   if (!im) { drawHist(null); $("#busy").hidden = true; return; }
   busyWanted = true; $("#busy").hidden = false;  // decoding the file for the first time can take a while
   getInfo(im).then(i => {
@@ -541,11 +542,14 @@ function loadStage() {
     view.iw = i.width; view.ih = i.height; resetView(); scheduleRender(0);
   });
 }
-async function fetchRender(id, settings, region, zoom, signal) {
+// Increasing across page loads too, so the server can tell which of two requests is newer.
+const renderStamp = () => Math.floor((performance.timeOrigin + performance.now()) * 1000);
+async function fetchRender(id, settings, region, zoom, signal, tag = "main") {
   const r = await fetch(`/api/images/${id}/render`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ settings, region, zoom }), signal,
+    body: JSON.stringify({ settings, region, zoom, tag, seq: renderStamp() }), signal,
   });
+  if (r.status === 409) throw new DOMException("superseded by a newer render", "AbortError");  // the server skipped it
   if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error; } catch { /* */ } throw new Error(m); }
   const hdr = r.headers.get("X-Region");
   if (!hdr) throw new Error("The Tonelith server is out of date. Close it and start it again (run.bat), then refresh this page.");
@@ -558,6 +562,7 @@ async function doRender() {
   const ctl = renderAbort = new AbortController();
   const seq = ++renderSeq; renderBusy = true; renderCx = view.cx; renderCy = view.cy;
   const settings = state.before ? state.meta.defaults : im.settings;
+  if (!view.fit) updateHistogram(im, settings);  // zoomed in: the preview is only part of the image, so use a small whole-image render
   const d = dpr(), z = curZ(), b = stageBox();
   let region;
   if (view.fit) region = [0, 0, 1, 1];
@@ -575,7 +580,7 @@ async function doRender() {
   try {
     const [main, orig] = await Promise.all([
       fetchRender(im.id, settings, region, zoom, ctl.signal),
-      needOrig ? fetchRender(im.id, state.meta.defaults, region, zoom, ctl.signal) : null,
+      needOrig ? fetchRender(im.id, state.meta.defaults, region, zoom, ctl.signal, "orig") : null,
     ]);
     if (state.focus !== im.id) { URL.revokeObjectURL(main.url); if (orig) URL.revokeObjectURL(orig.url); return; }
     await loadInto($("#mainImg"), main.url);
@@ -617,6 +622,20 @@ function setBefore(on) {
   state.before = on; $("#beforeTag").hidden = !on; scheduleRender(0);
 }
 
+let histAbort = null, histKey = null;
+async function updateHistogram(im, settings) {
+  const key = im.id + JSON.stringify(settings);
+  if (key === histKey) return;  // panning doesn't change the histogram
+  histKey = key;
+  histAbort?.abort();
+  const ctl = histAbort = new AbortController();
+  try {
+    const r = await fetchRender(im.id, settings, [0, 0, 1, 1], Math.min(1, 320 / Math.max(view.iw, view.ih)), ctl.signal, "hist");
+    const img = new Image();
+    try { await loadInto(img, r.url); if (!ctl.signal.aborted && state.focus === im.id && !view.fit) drawHist(img); }
+    finally { URL.revokeObjectURL(r.url); }
+  } catch { if (histAbort === ctl) histKey = null; /* cancelled, superseded or failed: keep the last drawing and retry next time */ }
+}
 function drawHist(img) {
   const c = $("#hist"), g = c.getContext("2d");
   g.clearRect(0, 0, c.width, c.height);

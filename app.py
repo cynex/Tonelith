@@ -299,10 +299,31 @@ def _render_error(e):
     return fail(f"Cannot decode image: {e}", 422)
 
 
+# Preview renders: the browser cancels a request when a newer one replaces it, but the server would carry on
+# computing it. Each request carries an increasing `seq` (per image and "main"/"orig" tag); only the newest is
+# worth rendering, so older ones that are still waiting are dropped, and at most a couple render at once.
+_render_latest = {}
+_render_lock = threading.Lock()
+_render_slots = threading.Semaphore(max(1, min(2, os.cpu_count() or 2)))
+
+
+def _superseded(key, seq):
+    with _render_lock:
+        return seq is not None and seq < _render_latest.get(key, 0)
+
+
 @app.post("/api/images/<int:iid>/render")
 def render_image(iid):
     im = _image_or_404(iid)
     body = request.json
+    seq, key = body.get("seq"), (iid, str(body.get("tag", "main")))
+    if isinstance(seq, (int, float)) and math.isfinite(seq):
+        with _render_lock:
+            _render_latest[key] = max(_render_latest.get(key, 0), seq)
+        if _superseded(key, seq):
+            return fail("superseded", 409)
+    else:
+        seq = None
     s = S.normalize(body.get("settings") or im["settings"])
     try:
         region = [float(v) for v in (body.get("region") or [0, 0, 1, 1])]
@@ -311,10 +332,13 @@ def render_image(iid):
             raise ValueError
     except (TypeError, ValueError):
         return fail("Bad region or zoom")
-    try:
-        data, actual = imaging.render_region(im["path"], s, region, zoom)
-    except Exception as e:  # noqa: BLE001
-        return _render_error(e)
+    with _render_slots:
+        if _superseded(key, seq):  # a newer request arrived while this one waited for a slot
+            return fail("superseded", 409)
+        try:
+            data, actual = imaging.render_region(im["path"], s, region, zoom)
+        except Exception as e:  # noqa: BLE001
+            return _render_error(e)
     return Response(data, mimetype="image/jpeg",
                     headers={"Cache-Control": "no-store", "X-Region": ",".join(f"{v:.6f}" for v in actual)})
 
