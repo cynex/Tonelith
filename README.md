@@ -68,7 +68,8 @@ versions):
   is running; it closes by itself when you close the browser (or close it to quit). Windows SmartScreen may warn about an unrecognised app: choose **More info > Run
   anyway**.
 - **macOS (Apple Silicon)** - unzip `Tonelith-macos-arm64.zip`, then **right-click `Tonelith.app` > Open** the first
-  time. It quits by itself when you close the browser window.
+  time. It quits by itself when you close the browser window, or use Quit from its Dock icon. (On an Intel Mac, or
+  to skip the warning, build it yourself: see below.)
 
 These apps are not code-signed. They keep their data in your user folders instead of next to the program:
 the catalog and caches in `%APPDATA%\Tonelith` (Windows) or `~/Library/Application Support/Tonelith` (macOS), and
@@ -76,6 +77,29 @@ exports and extracted movie frames in `Pictures/Tonelith`.
 
 To build an app yourself: `pip install -r requirements.txt -r requirements-build.txt`, then
 `pyinstaller tonelith.spec --noconfirm`. The result is in `dist/` (it has to be built on the platform it is for).
+
+### Build and install on your Mac (Applications + Dock)
+
+1. In Finder, open the Tonelith folder and double-click **`Install Tonelith.command`**. If macOS says it can't be
+   opened, right-click it and choose **Open** (or **System Settings > Privacy & Security > Open Anyway**).
+2. A Terminal window builds the app (the first run takes a few minutes), copies `Tonelith.app` into
+   **Applications** and adds it to the **Dock**. Press a key to close the window when it says it's done.
+
+It needs Python 3.10 or newer. The script finds it, offers to install it with [Homebrew](https://brew.sh) if Homebrew
+is there, and otherwise opens the python.org download page; install Python 3.12 from there and double-click the file
+again. Run it again after updating the source to rebuild; it replaces the installed app and doesn't add a second Dock
+icon. An app built on your own Mac is not quarantined, so it opens with a normal click.
+
+From Terminal the same thing is:
+
+```bash
+./build_launcher.sh                    # builds dist/Tonelith.app only
+./build_launcher.sh --install          # also copies it into /Applications (~/Applications if that isn't writable)
+./build_launcher.sh --install --dock   # ...and adds it to the Dock
+```
+
+The app shows in the Dock while it runs. Clicking its Dock icon opens Tonelith in your browser again; **Quit** (Dock
+menu or Cmd+Q) stops it. It also quits by itself shortly after you close the last browser tab.
 
 ## Setup and running
 
@@ -176,6 +200,7 @@ favorite folders, which panel sections are open) are stored in the browser's loc
 │   ├── db.py           SQLite catalog
 │   ├── imaging.py      Decoding, develop pipeline, previews, export
 │   ├── lifecycle.py    Shuts the server down when the browser is closed
+│   ├── macapp.py       Dock icon and Quit handling for the packaged Mac app
 │   ├── movies.py       Extracting still frames from movie files
 │   ├── paths.py        Where bundled files and user data live (source run vs packaged app)
 │   ├── settings.py     Develop-settings schema shared by server and UI
@@ -187,6 +212,8 @@ favorite folders, which panel sections are open) are stored in the browser's loc
 ├── requirements.txt
 ├── requirements-build.txt   PyInstaller (only needed to build the apps)
 ├── tonelith.spec       PyInstaller recipe for the Windows and macOS apps
+├── build_launcher.sh / .bat   Build the app (macOS: --install --dock)
+├── Install Tonelith.command   macOS: double-click to build, install and add to the Dock
 ├── .github/workflows/  Builds the apps on GitHub
 ├── setup.bat / setup.sh
 └── run.bat / run.sh

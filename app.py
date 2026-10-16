@@ -629,10 +629,29 @@ def main():
     url = f"http://127.0.0.1:{args.port}/"
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    busy = lambda: Q["running"] or movies.status()["running"]
     if not (args.keep_running or os.environ.get("TONELITH_KEEP_RUNNING")):
-        lifecycle.start(busy=lambda: Q["running"] or movies.status()["running"])
+        lifecycle.start(busy=busy)
     print(f"Tonelith running at {url}  (closing the browser or Ctrl+C quits)")
-    app.run(host="127.0.0.1", port=args.port, threaded=True, debug=False)
+
+    def serve():
+        app.run(host="127.0.0.1", port=args.port, threaded=True, debug=False)
+
+    if paths.FROZEN and sys.platform == "darwin":
+        try:
+            from tonelith import macapp
+        except ImportError:  # built without PyObjC: still works, but the Dock icon can't reopen or quit it
+            macapp = None
+        if macapp:
+            def serve_or_exit():
+                try:
+                    serve()
+                finally:
+                    os._exit(1)  # the server stopped: don't leave a Dock icon with nothing behind it
+            threading.Thread(target=serve_or_exit, name="tonelith-server", daemon=True).start()
+            macapp.run(url, busy)
+            return 0
+    serve()
 
 
 if __name__ == "__main__":

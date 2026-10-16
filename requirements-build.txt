@@ -1,1 +1,2 @@
 pyinstaller
+pyobjc-framework-Cocoa; sys_platform == "darwin"  # lets the Mac app answer its Dock icon and Quit

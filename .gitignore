@@ -22,7 +22,7 @@ __pycache__/
 .coverage
 htmlcov/
 
-# Packaging / build output
+# Packaging / build output (incl. PyInstaller)
 build/
 dist/
 *.egg-info/
@@ -49,7 +49,3 @@ desktop.ini
 # Frames extracted from movies
 movie_frames/
 **/movie_frames/
-
-# PyInstaller output
-build/
-dist/

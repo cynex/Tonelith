@@ -15,26 +15,38 @@ echo "=== Tonelith setup ==="
 echo
 
 # ---- 1. Find Python 3.10 or newer -------------------------------------------------------------
-PY=""
-for c in python3 python3.13 python3.12 python3.11 python3.10 python; do
-  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
-    PY="$c"; break
-  fi
-done
+# Versions with prebuilt packages for everything are tried first. Homebrew's folders are searched even when they
+# are not on PATH. On a Mac without the developer tools, /usr/bin/python3 is only a stub that pops up an
+# "install developer tools" dialog, so it is skipped there.
+find_python() {
+  local c
+  for c in python3.12 python3.13 python3.11 python3.10 python3 python \
+           /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    c="$(command -v "$c" 2>/dev/null)" || continue
+    if [ "$c" = /usr/bin/python3 ] && [ "$(uname)" = "Darwin" ] && ! xcode-select -p >/dev/null 2>&1; then continue; fi
+    if "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+      echo "$c"; return 0
+    fi
+  done
+  return 1
+}
+PY="$(find_python)"
 
 if [ -z "$PY" ]; then
   echo "[1/4] Python 3.10 or newer was not found."
-  if command -v brew >/dev/null 2>&1; then
+  BREW="$(command -v brew || ls /opt/homebrew/bin/brew /usr/local/bin/brew 2>/dev/null | head -n 1)"
+  if [ -n "$BREW" ]; then
     read -r -p "      Install Python 3.12 with Homebrew now? [y/N] " ans
     if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
-      brew install python@3.12 || { echo "Homebrew could not install Python."; finish 1; }
-      echo
-      echo "Python was installed. Open a new Terminal window and run ./setup.sh again."
-      finish 0
+      "$BREW" install python@3.12 || { echo "Homebrew could not install Python."; finish 1; }
+      PY="$(find_python)"
     fi
   fi
-  echo "      Install Python from https://www.python.org/downloads/ (or run: brew install python@3.12),"
-  echo "      then run ./setup.sh again."
+fi
+if [ -z "$PY" ]; then
+  echo "      Install Python 3.12 from https://www.python.org/downloads/macos/ (or, with Homebrew:"
+  echo "      brew install python@3.12), then run this again."
+  [ "$(uname)" = "Darwin" ] && [ -t 0 ] && open "https://www.python.org/downloads/macos/"
   finish 1
 fi
 echo "[1/4] Found $("$PY" --version)"
