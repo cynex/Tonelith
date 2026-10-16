@@ -49,3 +49,7 @@ desktop.ini
 # Frames extracted from movies
 movie_frames/
 **/movie_frames/
+
+# PyInstaller output
+build/
+dist/

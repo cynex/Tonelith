@@ -59,6 +59,24 @@ separate FFmpeg install is needed.
 
 If a package has no prebuilt wheel for your Python version, install Python 3.12 and run setup again.
 
+## Download the app (no Python needed)
+
+Ready-made apps are built automatically on GitHub (**Actions > Build apps**, or the **Releases** page for tagged
+versions):
+
+- **Windows** - unzip `Tonelith-windows.zip` and run `Tonelith.exe`. A small console window stays open while Tonelith
+  is running; it closes by itself when you close the browser (or close it to quit). Windows SmartScreen may warn about an unrecognised app: choose **More info > Run
+  anyway**.
+- **macOS (Apple Silicon)** - unzip `Tonelith-macos-arm64.zip`, then **right-click `Tonelith.app` > Open** the first
+  time. It quits by itself when you close the browser window.
+
+These apps are not code-signed. They keep their data in your user folders instead of next to the program:
+the catalog and caches in `%APPDATA%\Tonelith` (Windows) or `~/Library/Application Support/Tonelith` (macOS), and
+exports and extracted movie frames in `Pictures/Tonelith`.
+
+To build an app yourself: `pip install -r requirements.txt -r requirements-build.txt`, then
+`pyinstaller tonelith.spec --noconfirm`. The result is in `dist/` (it has to be built on the platform it is for).
+
 ## Setup and running
 
 ### Windows
@@ -115,17 +133,27 @@ Arguments are passed through `run.bat` / `run.sh` to `app.py`:
 |---|---|
 | `--port <number>` | Port to listen on (default `5174`) |
 | `--no-browser` | Do not open the browser automatically |
+| `--keep-running` | Keep the server running after the browser is closed (see below) |
 
 Example: `./run.sh --port 5200 --no-browser`
 
 If a previous Tonelith server is still running on the chosen port, it is stopped automatically. If another program
 holds the port, Tonelith tells you and exits; pick a different port with `--port`.
 
+### Quitting
+
+Tonelith shuts itself down about 10-15 seconds after the last browser window or tab showing it is closed, so there is
+nothing to stop by hand. A page refresh is fine. It never quits while an export or a movie import is still running
+(it waits for them to finish), and it also exits if no page opens within about a minute and a half of starting. To keep
+the server up regardless, for example to use it from a second window later, start it with `--keep-running` or set
+`TONELITH_KEEP_RUNNING=1`. Ctrl+C always quits.
+
 ### Environment variables
 
 | Variable | Purpose |
 |---|---|
 | `TONELITH_DATA` | Where the catalog database and caches are stored (default: `data/` in the app folder) |
+| `TONELITH_KEEP_RUNNING` | Set to `1` to keep the server running after the browser is closed |
 | `TONELITH_INFO` | Folder containing `application_info.html`, the text shown in the About window |
 
 ## Where things are stored
@@ -147,7 +175,9 @@ favorite folders, which panel sections are open) are stored in the browser's loc
 ├── tonelith/
 │   ├── db.py           SQLite catalog
 │   ├── imaging.py      Decoding, develop pipeline, previews, export
+│   ├── lifecycle.py    Shuts the server down when the browser is closed
 │   ├── movies.py       Extracting still frames from movie files
+│   ├── paths.py        Where bundled files and user data live (source run vs packaged app)
 │   ├── settings.py     Develop-settings schema shared by server and UI
 │   └── portutil.py     Port checks and replacing a stale server
 ├── static/             Browser UI (index.html, app.js, style.css, icons, manifest)
@@ -155,6 +185,9 @@ favorite folders, which panel sections are open) are stored in the browser's loc
 ├── info/               About-window content
 ├── tools/make_icons.py Icon generation helper
 ├── requirements.txt
+├── requirements-build.txt   PyInstaller (only needed to build the apps)
+├── tonelith.spec       PyInstaller recipe for the Windows and macOS apps
+├── .github/workflows/  Builds the apps on GitHub
 ├── setup.bat / setup.sh
 └── run.bat / run.sh
 ```

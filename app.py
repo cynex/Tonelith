@@ -14,12 +14,12 @@ from urllib.parse import urlparse
 from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
-from tonelith import db, imaging, movies, portutil
+from tonelith import db, imaging, lifecycle, movies, paths, portutil
 from tonelith import settings as S
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_EXPORT_DIR = os.path.join(ROOT, "exports")
-DEFAULT_MOVIE_DIR = os.path.join(ROOT, "movie_frames")
+ROOT = paths.RESOURCE_ROOT  # bundled static/, images/ and info/ (the repo folder when run from source)
+DEFAULT_EXPORT_DIR = paths.export_dir()
+DEFAULT_MOVIE_DIR = paths.movie_dir()
 INFO_FILE = os.path.join(os.environ.get("TONELITH_INFO") or os.path.join(ROOT, "info"), "application_info.html")
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
@@ -78,6 +78,13 @@ def manifest():  # lets Chrome/Edge install Tonelith as an app window with its o
 @app.get("/static/<path:name>")
 def static_files(name):
     return send_from_directory(os.path.join(ROOT, "static"), name, max_age=0)
+
+
+@app.get("/api/lifecycle")
+def lifecycle_stream():
+    """Held open by every page; when the last one goes away the server shuts itself down (see tonelith/lifecycle.py)."""
+    return Response(lifecycle.events(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/meta")
@@ -590,10 +597,26 @@ def export_cancel():
     return jsonify(cancelled=n)
 
 
+def _ensure_streams():
+    """A packaged, windowless app may have no console: give print() and the server log somewhere to go."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        os.makedirs(db.DATA_DIR, exist_ok=True)
+        log = open(os.path.join(db.DATA_DIR, "tonelith.log"), "a", buffering=1, encoding="utf-8")
+    except OSError:
+        log = open(os.devnull, "w")
+    sys.stdout = sys.stdout or log
+    sys.stderr = sys.stderr or log
+
+
 def main():
+    _ensure_streams()
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=5174)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--keep-running", action="store_true",
+                    help="do not exit when the browser is closed (also: TONELITH_KEEP_RUNNING=1)")
     args = ap.parse_args()
     # Take over from a Tonelith server that is still running on this port. This must happen before the catalog is
     # opened, because the old server holds it (and a new version may need to upgrade it).
@@ -606,7 +629,9 @@ def main():
     url = f"http://127.0.0.1:{args.port}/"
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    print(f"Tonelith running at {url}  (Ctrl+C to quit)")
+    if not (args.keep_running or os.environ.get("TONELITH_KEEP_RUNNING")):
+        lifecycle.start(busy=lambda: Q["running"] or movies.status()["running"])
+    print(f"Tonelith running at {url}  (closing the browser or Ctrl+C quits)")
     app.run(host="127.0.0.1", port=args.port, threaded=True, debug=False)
 
 

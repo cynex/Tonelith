@@ -4,10 +4,10 @@ import os
 import sqlite3
 import time
 
+from . import paths
 from . import settings as S
 
-DATA_DIR = os.environ.get("TONELITH_DATA") or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+DATA_DIR = paths.data_dir()
 DB_PATH = os.path.join(DATA_DIR, "tonelith.db")
 
 SCHEMA = """

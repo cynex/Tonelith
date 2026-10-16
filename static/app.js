@@ -1936,6 +1936,15 @@ function wire() {
 }
 
 /* ---------- boot ---------- */
+/* The server shuts itself down when no page is open, so each page keeps one event stream open to it. */
+function watchServer() {
+  if (!window.EventSource) return;
+  let errors = 0;
+  const es = new EventSource("/api/lifecycle");
+  es.onopen = () => { errors = 0; };
+  es.onerror = () => { if (++errors === 4) toast("Tonelith has stopped running. Start it again to carry on.", true); };
+}
+
 (async function boot() {
   try {
     state.meta = await api("GET", "/api/meta");
@@ -1950,6 +1959,7 @@ function wire() {
     if (route?.view === "develop") setView("develop");
     routing = false;
     syncHash("replace");
+    watchServer();  // tells the server this page is open; it quits when the last page closes
     pollQueue();  // pick up an export that is already running
     pollMovie();  // ...and a movie import
   } catch (e) { toast("Failed to start: " + e.message, true); }
