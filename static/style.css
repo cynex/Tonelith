@@ -102,10 +102,13 @@ main { flex: 1; min-height: 0; position: relative; }
 #splitLine::before { content: ""; position: absolute; top: 0; bottom: 0; left: 13px; width: 2px; background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.35), 0 0 6px rgba(0,0,0,.6); }
 #splitLine .grip { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #fff; color: #222; border-radius: 16px; padding: 4px 7px; font-size: 9px; letter-spacing: 2px; white-space: nowrap; box-shadow: 0 1px 6px rgba(0,0,0,.6); }
 #splitLine.dragging .grip { background: var(--accent); color: #fff; }
-#abBtn { position: absolute; bottom: 10px; left: 12px; z-index: 4; background: rgba(20,20,22,.82); }
+#stageBar { position: absolute; left: 12px; right: 12px; bottom: 10px; z-index: 4; display: flex; align-items: center; gap: 10px; pointer-events: none; }
+#stageBar > * { pointer-events: auto; }
+#stageBar #zoomBar { margin-left: auto; }  /* stays right when the queue is hidden; the queue (flex: 1) fills the rest */
+#abBtn { background: rgba(20,20,22,.82); }
 #abBtn.active { background: var(--accent); border-color: var(--accent); color: #06121f; }
 #mainImg, #origImg { position: absolute; max-width: none; max-height: none; display: block; user-select: none; visibility: hidden; }
-#zoomBar { position: absolute; bottom: 10px; right: 12px; display: flex; align-items: center; gap: 4px; background: rgba(20,20,22,.82); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; z-index: 2; }
+#zoomBar { display: flex; align-items: center; gap: 4px; background: rgba(20,20,22,.82); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; z-index: 2; }
 #zoomBar button { padding: 2px 8px; }
 #zoomLbl { min-width: 70px; text-align: center; color: var(--dim); font-variant-numeric: tabular-nums; }
 #stageMsg { position: absolute; color: var(--dim); text-align: center; padding: 20px; max-width: 70%; }
@@ -211,9 +214,9 @@ dialog h3 { margin: 0 0 12px; }
 #expLong { width: 90px; }
 progress { height: 10px; }
 .err { color: var(--danger); margin-top: 10px; font-size: 12.5px; }
-#queue { flex: none; gap: 6px; background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; }
-#queue progress { width: 110px; }
-#qLbl { max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: var(--dim); }
+#queue { flex: 1; min-width: 0; gap: 8px; align-items: center; background: rgba(20,20,22,.82); border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; }
+#queue progress { flex: 1; min-width: 40px; }
+#qLbl { flex: none; max-width: 45%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; color: var(--dim); }
 #queue.done #qLbl { color: var(--text); }
 #queue.bad #qLbl { color: var(--danger); cursor: pointer; text-decoration: underline; }
 #queue button { padding: 2px 9px; }

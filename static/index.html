@@ -35,12 +35,6 @@
     <button id="exportBtn" class="primary">Export</button>
   </div>
   <div class="spacer"></div>
-  <div id="queue" class="group" hidden>
-    <span id="qLbl"></span>
-    <progress id="qBar" value="0" max="1"></progress>
-    <button id="qCancel" title="Cancel the export queue">Cancel</button>
-    <button id="qClose" title="Dismiss" hidden>✕</button>
-  </div>
   <div class="group">
     <button id="cacheBtn" class="red" title="Temporary data folder">Temp</button>
     <button id="settingsBtn" title="Interface settings">⚙ Settings</button>
@@ -68,15 +62,23 @@
       <span id="tagOrig" class="abTag" hidden>ORIGINAL</span>
       <span id="tagCorr" class="abTag" hidden>CORRECTED</span>
       <div id="splitLine" hidden title="Drag left or right"><div class="grip">◀ ▶</div></div>
-      <button id="abBtn" title="Compare original and corrected (A)">A | B</button>
       <div id="beforeTag" hidden>BEFORE</div>
       <div id="busy" hidden></div>
+      <div id="stageBar">
+      <button id="abBtn" title="Compare original and corrected (A)">A | B</button>
+      <div id="queue" class="group" hidden>
+        <span id="qLbl"></span>
+        <progress id="qBar" value="0" max="1"></progress>
+        <button id="qCancel" title="Cancel the export queue">Cancel</button>
+        <button id="qClose" title="Dismiss" hidden>✕</button>
+      </div>
       <div id="zoomBar" title="Scroll to zoom, drag to pan, double-click toggles 100%">
         <button id="zoomOut" title="Zoom out (-)">−</button>
         <span id="zoomLbl">Fit</span>
         <button id="zoomIn" title="Zoom in (+)">＋</button>
         <button id="zoomFit" class="active" title="Fit to window (0)">Fit</button>
         <button id="zoom100" title="100% (Z)">100%</button>
+      </div>
       </div>
     </div>
     <div id="filmstrip"></div>
