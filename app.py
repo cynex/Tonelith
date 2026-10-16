@@ -84,7 +84,15 @@ def meta():
     return jsonify(schema=S.SCHEMA, defaults=S.DEFAULTS, proxy=imaging.PROXY_LONG,
                    formats=list(imaging.FORMATS), export_dir=DEFAULT_EXPORT_DIR,
                    raw_ext=sorted(imaging.RAW_EXT), std_ext=sorted(imaging.STD_EXT),
-                   raw_available=imaging.rawpy is not None, cache=imaging.cache_stats())
+                   raw_available=imaging.rawpy is not None, cache=imaging.cache_stats(),
+                   strength=imaging.STRENGTH, strength_range=imaging.STRENGTH_RANGE,
+                   strength_defaults={k: imaging.default_strength(k) for k in imaging.STRENGTH})
+
+
+@app.put("/api/prefs/strength")
+def put_strength():
+    imaging.set_strength(request.json or {})
+    return jsonify(strength=imaging.STRENGTH)
 
 
 # ---- libraries ----------------------------------------------------------------
@@ -163,8 +171,8 @@ def library_preview(lib_id):
 def add_images(lib_id):
     body = request.json
     files, skipped = _collect(body.get("paths") or [], bool(body.get("recursive")))
-    added, dupes = db.add_images(lib_id, files)
-    return jsonify(added=added, duplicates=dupes, skipped=skipped)
+    added, dupes, last_id = db.add_images(lib_id, files)
+    return jsonify(added=added, duplicates=dupes, skipped=skipped, last_id=last_id)
 
 
 def _copy_args(dst):
@@ -196,8 +204,39 @@ def set_featured():
 
 @app.post("/api/images/remove")
 def remove_images():
-    db.remove_images([int(i) for i in request.json.get("ids", [])])
+    ids = [int(i) for i in request.json.get("ids", [])]
+    paths = {im["path"] for im in map(db.image, ids) if im}
+    db.remove_images(ids)
+    # Cached data is keyed by file, so keep it for any file still used by another library or entry.
+    for p in paths:
+        if not db.path_in_use(p):
+            imaging.purge_path(p)
     return jsonify(ok=True)
+
+
+# ---- presets --------------------------------------------------------------------
+
+@app.get("/api/presets")
+def list_presets():
+    return jsonify(db.presets())
+
+
+@app.post("/api/presets")
+def create_preset():
+    body = request.json or {}
+    name = str(body.get("name", "")).strip()[:80]
+    if not name:
+        return fail("Give the preset a name")
+    if db.preset_exists(name) and not body.get("overwrite"):
+        return fail("A preset with that name already exists", 409)
+    db.save_preset(name, body.get("settings"))
+    return jsonify(db.presets())
+
+
+@app.delete("/api/presets/<int:preset_id>")
+def remove_preset(preset_id):
+    db.delete_preset(preset_id)
+    return jsonify(db.presets())
 
 
 # ---- settings -------------------------------------------------------------------
@@ -347,6 +386,18 @@ def fs_list():
     if parent == path:
         parent = ""
     return jsonify(path=path, parent=parent, places=_places(), entries=entries)
+
+
+@app.get("/api/fs/thumb")
+def fs_thumb():
+    path = os.path.abspath(os.path.expanduser(request.args.get("path", "")))
+    if not os.path.isfile(path) or not imaging.is_supported(path):
+        abort(404)
+    try:
+        out = imaging.browse_thumb(path)
+    except Exception as e:  # noqa: BLE001
+        return _render_error(e)
+    return send_file(out, mimetype="image/jpeg", max_age=31536000)
 
 
 # ---- export ---------------------------------------------------------------------

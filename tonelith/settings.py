@@ -3,7 +3,7 @@ import hashlib
 import json
 import math
 
-_WB, _TONE, _COLOR, _BAL = "White Balance", "Tone", "Color", "Color Balance"
+_WB, _TONE, _PRES, _BAL = "White Balance", "Tone", "Presence", "Color Balance"
 _SHARP, _NR = "Sharpening", "Noise Reduction"
 
 
@@ -21,9 +21,14 @@ SCHEMA = [
     _s("highlights", "Highlights", _TONE, -100, 100, 1),
     _s("midtones", "Midtones", _TONE, -100, 100, 1),
     _s("shadows", "Shadows", _TONE, -100, 100, 1),
+    _s("whites", "Whites", _TONE, -100, 100, 1),
+    _s("blacks", "Blacks", _TONE, -100, 100, 1),
 
-    _s("saturation", "Saturation", _COLOR, -100, 100, 1),
-    _s("vibrance", "Vibrance", _COLOR, -100, 100, 1),
+    _s("texture", "Texture", _PRES, -100, 100, 1),
+    _s("clarity", "Clarity", _PRES, -100, 100, 1),
+    _s("dehaze", "Dehaze", _PRES, -100, 100, 1),
+    _s("vibrance", "Vibrance", _PRES, -100, 100, 1),
+    _s("saturation", "Saturation", _PRES, -100, 100, 1),
 
     _s("shadow_hue", "Shadows Hue", _BAL, 0, 360, 1, 220, "hue"),
     _s("shadow_amt", "Shadows Amount", _BAL, 0, 100, 1),

@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS images (
 );
 CREATE INDEX IF NOT EXISTS idx_images_lib ON images(library_id);
 CREATE INDEX IF NOT EXISTS idx_images_lib_path ON images(library_id, path);
+CREATE TABLE IF NOT EXISTS presets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    settings TEXT NOT NULL,
+    created REAL NOT NULL
+);
 """
 
 # Older catalogs had UNIQUE (library_id, path), which stops a library holding two entries for one file
@@ -97,7 +103,7 @@ def _image(row):
     s = S.normalize(json.loads(row["settings"] or "{}"))
     return dict(id=row["id"], library_id=row["library_id"], path=row["path"], name=row["name"],
                 settings=s, rev=S.revision(s), edited=not S.is_default(s), featured=bool(row["featured"]),
-                missing=not os.path.isfile(row["path"]))
+                missing=not os.path.isfile(row["path"]), added=row["added"])
 
 
 # libraries ----------------------------------------------------------------
@@ -161,19 +167,21 @@ def image(image_id):
 
 
 def add_images(lib_id, paths):
-    """Returns (added, duplicates)."""
+    """Returns (added, duplicates, id of the last image added or None)."""
     added = dupes = 0
+    last_id = None
     with connect() as con:
         have = {r[0] for r in con.execute("SELECT path FROM images WHERE library_id = ?", (lib_id,))}
         for p in paths:
             if p in have:
                 dupes += 1
                 continue
-            con.execute("INSERT INTO images (library_id, path, name, added, settings) VALUES (?,?,?,?,?)",
-                        (lib_id, p, os.path.basename(p), time.time(), "{}"))
+            cur = con.execute("INSERT INTO images (library_id, path, name, added, settings) VALUES (?,?,?,?,?)",
+                              (lib_id, p, os.path.basename(p), time.time(), "{}"))
+            last_id = cur.lastrowid
             have.add(p)
             added += 1
-    return added, dupes
+    return added, dupes, last_id
 
 
 def set_featured(ids, featured):
@@ -184,6 +192,37 @@ def set_featured(ids, featured):
 def remove_images(ids):
     with connect() as con:
         con.executemany("DELETE FROM images WHERE id = ?", [(i,) for i in ids])
+
+
+# presets ------------------------------------------------------------------
+
+def presets():
+    with connect() as con:
+        rows = con.execute("SELECT id, name, settings FROM presets ORDER BY name COLLATE NOCASE").fetchall()
+    return [dict(id=r["id"], name=r["name"], settings=S.normalize(json.loads(r["settings"]))) for r in rows]
+
+
+def preset_exists(name):
+    with connect() as con:
+        return con.execute("SELECT 1 FROM presets WHERE name = ?", (name,)).fetchone() is not None
+
+
+def save_preset(name, settings):
+    """Create the preset, or replace the settings of the one with this name (case-insensitive)."""
+    blob = json.dumps(S.normalize(settings))
+    with connect() as con:
+        con.execute("""INSERT INTO presets (name, settings, created) VALUES (?, ?, ?)
+                       ON CONFLICT(name) DO UPDATE SET settings = excluded.settings""", (name, blob, time.time()))
+
+
+def delete_preset(preset_id):
+    with connect() as con:
+        con.execute("DELETE FROM presets WHERE id = ?", (preset_id,))
+
+
+def path_in_use(path):
+    with connect() as con:
+        return con.execute("SELECT 1 FROM images WHERE path = ? LIMIT 1", (path,)).fetchone() is not None
 
 
 def save_settings(updates):

@@ -24,6 +24,7 @@ try:
 except ImportError:
     pillow_heif = None
 
+from . import settings as S
 from .db import DATA_DIR
 
 Image.MAX_IMAGE_PIXELS = None
@@ -152,6 +153,23 @@ def file_key(path):
     return hashlib.sha1(raw.encode("utf-8", "surrogatepass")).hexdigest()[:20]
 
 
+def purge_path(path):
+    """Delete the cached proxy and thumbnails of a file (never the file itself)."""
+    try:
+        key = file_key(path)
+    except OSError:
+        return  # file is gone; its cache entries can't be matched by key and are cleared with the temp data
+    with _mem_lock:
+        _mem.pop(key, None)
+    for d in (PROXY_DIR, THUMB_DIR):
+        for name in os.listdir(d):
+            if name.startswith(key + "_") or name.startswith(key + ".") or name.startswith(f"fs_{key}."):
+                try:
+                    os.remove(os.path.join(d, name))
+                except OSError:
+                    pass
+
+
 def get_proxy(path):
     """Returns (rgb16 proxy, full_w, full_h, key)."""
     key = file_key(path)
@@ -245,8 +263,119 @@ def _denoise(x, s, scale):
     return cv2.cvtColor(np.dstack([y, cr, cb]), cv2.COLOR_YCrCb2RGB)
 
 
+# Temperature / tint. Each end of the slider is a per-channel curve  out = a * in**p + b  (R, G, B), fitted to
+# Lightroom exports of the same photo at -100 and +100. Intermediate slider values blend the parameters
+# towards the identity curve (a=1, p=1, b=0): a and p geometrically, b linearly.
+_WB_TEMP = {  # -100 = cool (blue), +100 = warm (orange)
+    -1: ((1.165, 1.04, -0.077), (1.24, 0.56, -0.176), (1.248, 0.20, -0.126)),
+    +1: ((1.398, 0.34, -0.28), (1.223, 0.46, -0.182), (1.01, 1.05, -0.027)),
+}
+_WB_TINT = {  # -100 = green, +100 = magenta
+    -1: ((1.045, 1.42, -0.014), (1.212, 0.53, -0.115), (0.992, 1.04, -0.015)),
+    +1: ((1.057, 0.72, -0.037), (1.029, 1.05, -0.019), (1.417, 0.35, -0.334)),
+}
+
+
+# Per-slider strength multiplier: how far each slider moves from its default (1 = as designed). App-wide,
+# edited from the cog next to each slider and kept in data/prefs.json.
+STRENGTH_RANGE = (0.01, 3.0)
+STRENGTH_DEFAULTS = {"texture": 0.25, "dehaze": 0.5}  # everything else defaults to 1
+PREFS_PATH = os.path.join(DATA_DIR, "prefs.json")
+_TUNABLE = [p for p in S.SCHEMA if p["kind"] != "hue"]
+
+
+def default_strength(key):
+    return STRENGTH_DEFAULTS.get(key, 1.0)
+
+
+STRENGTH = {p["key"]: default_strength(p["key"]) for p in _TUNABLE}
+
+
+def _clamp_strength(v, key):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return default_strength(key)
+    if v != v:
+        return default_strength(key)
+    return round(min(STRENGTH_RANGE[1], max(STRENGTH_RANGE[0], v)), 2)
+
+
+def load_prefs():
+    try:
+        with open(PREFS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        raw = data.get("strength") or data.get("wb_strength") or {}
+    except (OSError, ValueError, AttributeError):
+        raw = {}
+    for k in STRENGTH:
+        STRENGTH[k] = _clamp_strength(raw.get(k, default_strength(k)), k)
+
+
+def set_strength(new):
+    for k in STRENGTH:
+        if k in new:
+            STRENGTH[k] = _clamp_strength(new[k], k)
+    tmp = PREFS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"strength": STRENGTH}, f)
+    os.replace(tmp, PREFS_PATH)
+
+
+def strength_tag():
+    """Short fingerprint of the non-default multipliers, part of the thumbnail cache name."""
+    changed = sorted((k, v) for k, v in STRENGTH.items() if v != default_strength(k))
+    return hashlib.sha1(repr(changed).encode()).hexdigest()[:8]
+
+
+def apply_strength(s):
+    """Settings as rendered: each slider's distance from its default is scaled by its multiplier."""
+    out = dict(s)
+    for p in _TUNABLE:
+        m = STRENGTH[p["key"]]
+        if m != 1.0:
+            v = p["default"] + (s[p["key"]] - p["default"]) * m
+            out[p["key"]] = max(p["min"], v) if p["min"] >= 0 else v
+    return out
+
+
+load_prefs()
+
+
+def _apply_wb(x, v, ends):
+    if not v:
+        return x
+    k = abs(v)
+    abp = np.array(ends[1 if v > 0 else -1], np.float32)  # (3 channels, [a, p, b])
+    a, p, b = abp[:, 0] ** k, abp[:, 1] ** k, abp[:, 2] * k
+    return np.clip(a * np.power(np.clip(x, 0, 1), p) + b, 0, 1).astype(np.float32)
+
+
+_HAZE_LIGHT = 0.9  # fixed atmospheric light so strips/regions of one image render identically
+
+
+def _dehaze(x, d, scale):
+    if not d:
+        return x
+    if d < 0:  # add haze: blend towards a light grey veil
+        k = -d * 0.4
+        return (x * (1 - k) + 0.85 * k).astype(np.float32)
+    dark = (x / _HAZE_LIGHT).min(-1)
+    r = max(1, int(round(7 * scale)))
+    dark = cv2.erode(dark, cv2.getStructuringElement(cv2.MORPH_RECT, (2 * r + 1, 2 * r + 1)))
+    dark = cv2.GaussianBlur(dark, (0, 0), max(1.0, 6 * scale))
+    t = np.maximum(1 - 0.95 * d * np.clip(dark, 0, 1), 0.25)[..., None]
+    return np.clip((x - _HAZE_LIGHT) / t + _HAZE_LIGHT, 0, 1).astype(np.float32)
+
+
+def _presence_pad(s):
+    """Extra overlap (px) needed around a strip/region so the wide blurs above don't show seams."""
+    return 110 if (s.get("clarity") or s.get("dehaze")) else 0
+
+
 def render(img16, s, scale=1.0, bits=8):
     """Apply develop settings. scale = this image's long edge / full-res long edge."""
+    s = apply_strength(s)
     x = img16.astype(np.float32)
     x *= 1.0 / 65535.0
 
@@ -255,16 +384,17 @@ def render(img16, s, scale=1.0, bits=8):
         # gamma step below and show up as black pixels, so clamp before going any further.
         x = np.clip(_denoise(x, s, scale), 0, 1)
 
-    # White balance + exposure in (approximately) linear light.
-    t, ti, ev = s["temperature"] / 100, s["tint"] / 100, s["exposure"]
-    if t or ti or ev:
-        g = np.array([2 ** (0.6 * t), 2 ** (-0.4 * ti), 2 ** (-0.6 * t)], np.float32)
-        g /= float(g @ np.array([0.299, 0.587, 0.114], np.float32))
-        g *= 2.0 ** ev
+    # Exposure in (approximately) linear light.
+    ev = s["exposure"]
+    if ev:
         np.power(x, _GAMMA, out=x)
-        x *= g
+        x *= 2.0 ** ev
         np.clip(x, 0, 1, out=x)
         np.power(x, 1.0 / _GAMMA, out=x)
+
+    # White balance: per-channel curves on the encoded values, matched to Lightroom's ±100 results.
+    x = _apply_wb(x, s["temperature"] / 100, _WB_TEMP)
+    x = _apply_wb(x, s["tint"] / 100, _WB_TINT)
 
     # Shadows / midtones / highlights and contrast, in encoded space.
     sh, mi, hi = s["shadows"] / 100, s["midtones"] / 100, s["highlights"] / 100
@@ -284,6 +414,32 @@ def render(img16, s, scale=1.0, bits=8):
     if c:
         sm = x * x * (3 - 2 * x)
         x += c * (sm - x)
+
+    # Whites / blacks: move the extreme ends of the tonal range (weighted by x^3 and (1-x)^3, so the
+    # midtones barely change). Whites > 0 brightens the top end; blacks > 0 lifts the bottom end.
+    wh, bl = s["whites"] / 100, s["blacks"] / 100
+    if wh or bl:
+        x = np.clip(x, 0, 1)
+        d = np.zeros_like(x)
+        if wh:
+            d += (0.35 * wh) * x ** 3
+        if bl:
+            d += (0.25 * bl) * (1 - x) ** 3
+        x = np.clip(x + d, 0, 1)
+
+    # Presence: dehaze, clarity (local contrast), texture (fine detail). Radii are in full-resolution pixels.
+    x = _dehaze(x, s["dehaze"] / 100, scale)
+    cl, tx = s["clarity"] / 100, s["texture"] / 100
+    if cl or tx:
+        y = _luma(x)
+        if cl:
+            m = 4 * y * (1 - y)  # midtones only, so blacks and whites aren't pushed around
+            detail = y - cv2.GaussianBlur(y, (0, 0), max(1.0, 24 * scale))
+            x += (cl * 0.9 * m * detail)[..., None]
+        if tx:
+            detail = y - cv2.GaussianBlur(y, (0, 0), max(0.5, 2.5 * scale))
+            x += (tx * 1.2 * detail)[..., None]
+        np.clip(x, 0, 1, out=x)
 
     # Saturation / vibrance.
     sa, vi = s["saturation"] / 100, s["vibrance"] / 100
@@ -313,6 +469,7 @@ def render_banded(img16, s, scale, bits=8, band=1024, pad=64):
     if h * w <= 8_000_000:
         return render(img16, s, scale, bits)
     out = np.empty((h, w, 3), np.uint16 if bits == 16 else np.uint8)
+    pad = max(pad, int(_presence_pad(s) * max(scale, 0.25)))
     for y0 in range(0, h, band):
         y1 = min(h, y0 + band)
         a, b = max(0, y0 - pad), min(h, y1 + pad)
@@ -367,6 +524,7 @@ def render_region(path, s, region, zoom, max_out=4096, pad_px=48):
         k *= max_out / longest
     scale = k * sa
 
+    pad_px = max(pad_px, _presence_pad(s))
     pad = int(min(400, np.ceil(pad_px / max(k, 0.05))))
     px0, py0, px1, py1 = max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad)
     crop = src[py0:py1, px0:px1]
@@ -382,7 +540,7 @@ def render_region(path, s, region, zoom, max_out=4096, pad_px=48):
 
 def render_thumb(path, s, rev):
     arr, fw, fh, key = get_proxy(path)
-    out = os.path.join(THUMB_DIR, f"{key}_{rev}.jpg")
+    out = os.path.join(THUMB_DIR, f"{key}_{rev}_{strength_tag()}.jpg")
     if os.path.isfile(out):
         return out
     arr = resize_long(arr, THUMB_LONG)
@@ -397,6 +555,21 @@ def render_thumb(path, s, rev):
     tmp = out + ".tmp"
     with open(tmp, "wb") as f:
         f.write(data)
+    os.replace(tmp, out)
+    return out
+
+
+def browse_thumb(path, long_edge=240):
+    """Small unedited thumbnail for the file browser (cached by file key)."""
+    key = file_key(path)
+    out = os.path.join(THUMB_DIR, f"fs_{key}.jpg")
+    if os.path.isfile(out):
+        return out
+    arr, _, _, _ = get_proxy(path)
+    rgb8 = (resize_long(arr, long_edge) >> 8).astype(np.uint8)
+    tmp = out + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(_jpeg(rgb8, 80))
     os.replace(tmp, out)
     return out
 

@@ -25,10 +25,19 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const state = {
   meta: null, libs: [], libId: null, images: [],
   sel: new Set(), focus: null, anchor: null,
-  view: "library", before: false, clip: null, split: false, splitFrac: 0.5,
+  presets: [], view: "library", before: false, clip: null, split: false, splitFrac: 0.5,
 };
 
 /* ---------- helpers ---------- */
+// Text can only be selected inside a field that's being edited (the CSS says so too; this also covers Ctrl+A and drags that start elsewhere).
+const EDITABLE = "input:not([type=range]):not([type=checkbox]):not([type=radio]):not([type=button]), textarea, [contenteditable=''], [contenteditable='true']";
+document.addEventListener("selectstart", e => {
+  const el = e.target instanceof Element ? e.target : e.target.parentElement;
+  if (!el?.closest(EDITABLE)) e.preventDefault();
+});
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && !document.activeElement?.closest?.(EDITABLE)) e.preventDefault();
+}, true);
 async function api(method, url, body, signal) {
   const opt = { method, signal };
   if (method !== "GET") { opt.headers = { "Content-Type": "application/json" }; opt.body = JSON.stringify(body ?? {}); }
@@ -53,7 +62,9 @@ const store = {
 const byId = id => state.images.find(i => i.id === id);
 const focusImage = () => byId(state.focus);
 const fmtBytes = n => n > 1e9 ? (n / 1e9).toFixed(2) + " GB" : n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1e3)) + " KB";
-const thumbUrl = im => `/api/images/${im.id}/thumb?rev=${im.rev}`;
+// `a` (when the entry was added) keeps a browser-cached thumbnail of an earlier, deleted entry that had the same id from being reused.
+let thumbBust = 0;  // bumped when temp data is cleared so thumbnails are regenerated, not served from the browser cache
+const thumbUrl = im => `/api/images/${im.id}/thumb?rev=${im.rev}&a=${im.added}${thumbBust ? "&b=" + thumbBust : ""}`;
 /* ---------- URL routing: #/<library|develop>/<library id>[/<image id>] ---------- */
 let routing = false;  // true while we are applying a URL, so that doing so doesn't create history entries
 function parseHash() {
@@ -222,6 +233,8 @@ function setView(v) {
   $("#developView").hidden = v !== "develop";
   $("#tabLib").classList.toggle("active", v === "library");
   $("#tabDev").classList.toggle("active", v === "develop");
+  $("#presetsBtn").hidden = v !== "develop";  // presets only apply while developing
+  if (v !== "develop") closePresetMenu();
   if (v === "develop") enterDevelop();
   refreshSelectionUI();
   syncHash("push");
@@ -230,6 +243,49 @@ function enterDevelop() {
   if (state.focus === null && state.images.length) state.focus = [...state.sel][0] ?? state.images[0].id;
   if (state.focus !== null && !state.sel.size) state.sel = new Set([state.focus]);
   syncPanel(); loadStage();
+}
+
+/* ---------- interface settings (this browser only, never in the repo) ---------- */
+const UI_DEFAULTS = { panVelocity: 1, panDamping: 50, panUpdate: 0.25, panThreshold: 40 };
+const uiSettings = () => {
+  const o = { ...UI_DEFAULTS, ...store.get("ui", {}) };
+  for (const k of Object.keys(UI_DEFAULTS)) if (!Number.isFinite(+o[k])) o[k] = UI_DEFAULTS[k];
+  return o;
+};
+
+/* Momentum after a drag: keep gliding at the release velocity, slowing by the damping setting.
+   step(dxPx, dyPx) moves the thing and returns, per axis, false when it hit an edge. */
+let glideId = 0;
+const stopGlide = () => { if (glideId) { cancelAnimationFrame(glideId); glideId = 0; } };
+function glide(vx, vy, step, done) {
+  stopGlide();
+  const { panVelocity, panDamping } = uiSettings();
+  vx *= panVelocity; vy *= panVelocity;                          // px per ms
+  const keep = 0.995 - panDamping * 0.0015;                      // fraction of speed kept per 16.7 ms frame
+  if (Math.hypot(vx, vy) < 0.05) return done?.();
+  let last = performance.now();
+  const frame = now => {
+    const dt = Math.min(50, now - last); last = now;
+    const [okX, okY] = step(vx * dt, vy * dt);
+    if (!okX) vx = 0;
+    if (!okY) vy = 0;
+    const f = Math.pow(keep, dt / 16.7); vx *= f; vy *= f;
+    if (Math.hypot(vx, vy) < 0.01) { glideId = 0; return done?.(); }
+    glideId = requestAnimationFrame(frame);
+  };
+  glideId = requestAnimationFrame(frame);
+}
+/* Tracks recent pointer positions so the release velocity ignores a pause just before letting go. */
+function velocityTracker() {
+  let pts = [];
+  return {
+    add(e) { const t = performance.now(); pts.push({ t, x: e.clientX, y: e.clientY }); pts = pts.filter(p => t - p.t < 120); },
+    release() {
+      const t = performance.now(), a = pts[0], b = pts[pts.length - 1]; pts = [];
+      if (!a || !b || b === a || t - b.t > 60) return [0, 0];
+      const dt = b.t - a.t; return dt > 0 ? [(b.x - a.x) / dt, (b.y - a.y) / dt] : [0, 0];
+    },
+  };
 }
 
 /* ---------- develop panel ---------- */
@@ -241,16 +297,22 @@ const GRADS = {
 };
 const HUE_GRAD = "linear-gradient(90deg,hsl(0,80%,55%),hsl(60,80%,55%),hsl(120,80%,55%),hsl(180,80%,55%),hsl(240,80%,55%),hsl(300,80%,55%),hsl(360,80%,55%))";
 
+// Panel sections that start open; after that the viewer's own choice is remembered across refreshes.
+const DEFAULT_OPEN_SECTIONS = ["Tone", "Sharpening", "Noise Reduction"];
+const openSections = () => store.get("openSections", DEFAULT_OPEN_SECTIONS);
 function buildPanel() {
   const host = $("#sliders"); host.innerHTML = "";
   const sections = [...new Set(state.meta.schema.map(p => p.section))];
   for (const name of sections) {
     const sec = document.createElement("div");
     sec.className = "sec";
-    sec.innerHTML = `<div class="hd"><span>${name}</span><span class="rs" title="Reset section">Reset</span></div>`;
+    sec.innerHTML = `<div class="hd"><span class="ttl"><span class="tg"></span>${name}</span><span class="rs" title="Reset section">Reset</span></div>`;
+    if (!openSections().includes(name)) sec.classList.add("collapsed");
     $(".hd", sec).addEventListener("click", e => {
       if (e.target.classList.contains("rs")) { resetKeys(state.meta.schema.filter(p => p.section === name).map(p => p.key)); return; }
       sec.classList.toggle("collapsed");
+      const rest = openSections().filter(n => n !== name);
+      store.set("openSections", sec.classList.contains("collapsed") ? rest : [...rest, name]);
     });
     for (const p of state.meta.schema.filter(p => p.section === name)) {
       const row = document.createElement("div");
@@ -261,6 +323,13 @@ function buildPanel() {
       row.innerHTML = `<label title="Double-click to reset">${p.label}</label>
         <input type="range" min="${p.min}" max="${p.max}" step="${p.step}">
         <input type="number" min="${p.min}" max="${p.max}" step="${p.step}">`;
+      if (p.kind !== "hue") {
+        const cog = document.createElement("button");
+        cog.className = "cog"; cog.type = "button"; cog.textContent = "⚙"; cog.title = `${p.label} strength…`;
+        cog.addEventListener("click", () => openStrength(p));
+        cog.addEventListener("dblclick", e => e.stopPropagation());
+        $("label", row).append(cog);
+      }
       const [range, num] = $$("input", row);
       range.addEventListener("input", () => setValue(p.key, +range.value));
       num.addEventListener("change", () => setValue(p.key, Math.min(p.max, Math.max(p.min, +num.value || 0))));
@@ -272,6 +341,28 @@ function buildPanel() {
     host.appendChild(sec);
   }
 }
+/* Per-slider strength multiplier (app-wide, stored on the server). */
+function openStrength(p) {
+  const [lo, hi] = state.meta.strength_range, dlg = $("#wbDlg");
+  const range = $("#wbRange"), num = $("#wbNum");
+  $("#wbTitle").textContent = `${p.section}: ${p.label} strength`;
+  for (const el of [range, num]) { el.min = lo; el.max = hi; el.step = 0.01; }
+  const set = v => { range.value = num.value = (Math.min(hi, Math.max(lo, +v || state.meta.strength_defaults[p.key]))).toFixed(2); };
+  set(state.meta.strength[p.key]);
+  range.oninput = () => set(range.value);
+  num.onchange = () => set(num.value);
+  $("#wbReset").onclick = () => set(state.meta.strength_defaults[p.key]);
+  $("#wbCancel").onclick = () => dlg.close();
+  $("#wbSave").onclick = async () => {
+    try {
+      const r = await api("PUT", "/api/prefs/strength", { [p.key]: +num.value });
+      state.meta.strength = r.strength;
+      dlg.close();
+      thumbBust = Date.now(); buildLists(); busyWanted = true; scheduleRender();  // thumbnails and the open image re-render
+    } catch (e) { toast("Could not save: " + e.message, true); }
+  };
+  dlg.showModal();
+}
 function syncPanel() {
   const im = focusImage();
   $$("#sliders .row").forEach(row => {
@@ -281,13 +372,33 @@ function syncPanel() {
     range.value = v; num.value = v;
     row.classList.toggle("changed", v !== p.default);
   });
-  $("#imgInfo").textContent = im ? im.name : "";
+  renderImgInfo(im, null);
   if (im) getInfo(im).then(i => {
     if (state.focus !== im.id) return;
-    $("#imgInfo").textContent = i.error ? `${im.name} — ${i.error}` :
-      `${im.name}\n${i.width} × ${i.height}${i.raw ? " · RAW" : ""} · ${fmtBytes(i.bytes)}\n${im.path}`;
-    $("#imgInfo").style.whiteSpace = "pre-wrap";
+    renderImgInfo(im, i);
   });
+}
+/* File name / size / full path in the panel, with a copy button after the name and after the path. */
+function renderImgInfo(im, i) {
+  const box = $("#imgInfo"); box.replaceChildren(); box.style.whiteSpace = "pre-wrap";
+  if (!im) return;
+  const line = (text, copy, label) => {
+    const d = document.createElement("div"); d.className = "infoLine";
+    d.append(text);
+    if (copy) {
+      const b = document.createElement("button");
+      b.className = "copyBtn"; b.type = "button"; b.textContent = "⧉"; b.title = label; b.setAttribute("aria-label", label);
+      b.onclick = async () => {
+        try { await navigator.clipboard.writeText(copy); toast("Copied: " + copy); }
+        catch { toast("Could not copy to the clipboard", true); }
+      };
+      d.append(" ", b);
+    }
+    box.append(d);
+  };
+  line(i?.error ? `${im.name} — ${i.error}` : im.name, im.name, "Copy file name");
+  if (i && !i.error) line(`${i.width} × ${i.height}${i.raw ? " · RAW" : ""} · ${fmtBytes(i.bytes)}`);
+  if (i && !i.error) line(im.path, im.path, "Copy full path");
 }
 function getInfo(im) {
   im._info ??= api("GET", `/api/images/${im.id}/info`).catch(e => ({ error: e.message }));
@@ -301,13 +412,13 @@ function setValue(key, v) {
   const row = $(`#sliders .row[data-key="${key}"]`);
   const [range, num] = $$("input", row);
   range.value = v; num.value = v; row.classList.toggle("changed", v !== p.default);
-  scheduleRender(); queueSave(im);
+  busyWanted = true; scheduleRender(); queueSave(im);
 }
 function resetKeys(keys) {
   const im = focusImage(); if (!im) return;
   keys.forEach(k => im.settings[k] = state.meta.defaults[k]);
   im.edited = JSON.stringify(im.settings) !== JSON.stringify(state.meta.defaults);
-  syncPanel(); scheduleRender(0); queueSave(im);
+  syncPanel(); busyWanted = true; scheduleRender(0); queueSave(im);
 }
 
 /* ---------- saving ---------- */
@@ -336,6 +447,9 @@ window.addEventListener("beforeunload", () => {
 
 /* ---------- rendering ---------- */
 let renderTimer = null, renderAbort = null, lastUrl = null;
+// The loading indicator is only for renders caused by a setting change (or opening an image), not for pans and zooms.
+let busyWanted = false;
+let renderSeq = 0, renderBusy = false, lastLive = 0, renderCx = 0, renderCy = 0;  // renderCx/Cy: view centre of the last render
 function scheduleRender(delay = 35) { clearTimeout(renderTimer); renderTimer = setTimeout(doRender, delay); }
 
 /* View model. z = device pixels per image pixel; (cx, cy) = image pixel at the stage centre.
@@ -350,6 +464,7 @@ const curZ = () => view.fit ? fitZ() : view.z;
 const MAX_Z = 8;
 
 function resetView() {
+  stopGlide();
   // Keep the current bitmap on screen (repositioned) until the fit-size render replaces it.
   Object.assign(view, { fit: true, cx: view.iw / 2, cy: view.ih / 2 });
   layoutImage(); updateZoomUI();
@@ -399,6 +514,7 @@ function clampCenter() {
 /* Zoom to newZ keeping the image point under stage position (mx, my) fixed. */
 function zoomTo(newZ, mx, my) {
   if (!view.iw) return;
+  stopGlide();
   const b = stageBox(), f = fitZ(), d = dpr(), z0 = curZ();
   mx ??= b.w / 2; my ??= b.h / 2;
   const px = view.cx + (mx - b.w / 2) * d / z0, py = view.cy + (my - b.h / 2) * d / z0;
@@ -412,12 +528,13 @@ function zoomTo(newZ, mx, my) {
 }
 
 function loadStage() {
+  stopGlide();
   const im = focusImage();
   $("#stageMsg").textContent = im ? "" : "No image selected";
   renderAbort?.abort();
   view.iw = view.ih = 0; view.shown = view.origShown = null; origKey = null; layoutImage(); updateZoomUI();
   if (!im) { drawHist(null); $("#busy").hidden = true; return; }
-  $("#busy").hidden = false;  // decoding the file for the first time can take a while
+  busyWanted = true; $("#busy").hidden = false;  // decoding the file for the first time can take a while
   getInfo(im).then(i => {
     if (state.focus !== im.id) return;
     if (i.error) { $("#stageMsg").textContent = i.error; $("#busy").hidden = true; return; }
@@ -439,6 +556,7 @@ async function doRender() {
   const im = focusImage(); if (!im || !view.iw) return;
   renderAbort?.abort();
   const ctl = renderAbort = new AbortController();
+  const seq = ++renderSeq; renderBusy = true; renderCx = view.cx; renderCy = view.cy;
   const settings = state.before ? state.meta.defaults : im.settings;
   const d = dpr(), z = curZ(), b = stageBox();
   let region;
@@ -453,7 +571,7 @@ async function doRender() {
   // The original only needs re-rendering when the image, region or zoom changes, not on slider edits.
   const key = `${im.id}|${region.map(v => v.toFixed(5))}|${zoom.toFixed(4)}`;
   const needOrig = state.split && key !== origKey;
-  $("#busy").hidden = false;
+  if (busyWanted) $("#busy").hidden = false;
   try {
     const [main, orig] = await Promise.all([
       fetchRender(im.id, settings, region, zoom, ctl.signal),
@@ -476,8 +594,22 @@ async function doRender() {
     view.shown = view.origShown = null; layoutImage();
     $("#stageMsg").textContent = e.message;
   } finally {
-    if (!ctl.signal.aborted) $("#busy").hidden = true;
+    if (!ctl.signal.aborted) { $("#busy").hidden = true; busyWanted = false; }
+    if (seq === renderSeq) renderBusy = false;
   }
+}
+/* While dragging or gliding, re-render the visible region every `panUpdate` seconds so the parts that have
+   scrolled into view fill in. A render already under way is left to finish rather than being aborted. */
+function liveRender() {
+  const { panUpdate, panThreshold } = uiSettings(), now = performance.now();
+  if (panUpdate <= 0 || renderBusy || now - lastLive < panUpdate * 1000 || movedPx() < Math.max(1, panThreshold)) return;
+  lastLive = now; doRender();
+}
+/* How far (in screen px) the view has moved since the last render. */
+const movedPx = () => Math.hypot(view.cx - renderCx, view.cy - renderCy) * curZ() / dpr();
+/* After a drag/glide ends: render the final position, unless it has barely moved (no loading flicker for nothing). */
+function settleRender() {
+  if (!view.shown || movedPx() >= Math.max(1, uiSettings().panThreshold)) scheduleRender(60);
 }
 function setBefore(on) {
   if (state.split) return;  // the split view already shows the original
@@ -510,6 +642,28 @@ function openCopyDialog() {
   box.innerHTML = sectionsList().map(s => `<label><input type="checkbox" checked value="${s}"> ${s}</label>`).join("");
   $("#copyDlg").showModal();
 }
+/* Copy the edited image (as it looks with its current settings) to the system clipboard as a PNG. */
+async function copyImageToClipboard() {
+  const im = focusImage() ?? byId([...state.sel][0]);
+  if (!im) return toast("Select an image to copy", true);
+  if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") return toast("This browser can't copy images to the clipboard", true);
+  flushAllSaves();
+  toast(`Copying ${im.name}…`);
+  // Handing the clipboard a promise keeps the click's permission alive while the image renders.
+  const png = (async () => {
+    const r = await fetch(`/api/images/${im.id}/render`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: im.settings, region: [0, 0, 1, 1], zoom: 1 }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    const bmp = await createImageBitmap(await r.blob());
+    const c = document.createElement("canvas"); c.width = bmp.width; c.height = bmp.height;
+    c.getContext("2d").drawImage(bmp, 0, 0);
+    return await new Promise((ok, no) => c.toBlob(b => b ? ok(b) : no(new Error("PNG encode failed")), "image/png"));
+  })();
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    toast(`Copied ${im.name} to the clipboard`);
+  } catch (e) { toast("Could not copy the image: " + e.message, true); }
+}
 async function copySettings(sections) {
   const src = focusImage() ?? byId([...state.sel][0]);
   if (!src) return toast("No image to copy from", true);
@@ -533,20 +687,24 @@ async function pasteSettings() {
   } catch { /* clipboard unreadable or not ours */ }
   payload ??= state.clip;
   if (!payload) return toast("Nothing to paste — copy settings first", true);
+  await applySettingsToSelection(payload.settings, "Pasted settings onto");
+}
+/* Write `settings` onto every selected image (paste and presets share this). */
+async function applySettingsToSelection(settings, doneMsg) {
   const ids = [...state.sel];
-  if (!ids.length) return toast("Select images to paste onto", true);
+  if (!ids.length) return toast("Select images first", true);
   flushAllSaves();
   try {
-    const r = await api("POST", "/api/images/settings", { ids, settings: payload.settings });
+    const r = await api("POST", "/api/images/settings", { ids, settings });
     for (const [id, v] of Object.entries(r)) {
       const im = byId(+id); if (!im) continue;
       im.settings = v.settings; im.rev = v.rev;
       im.edited = JSON.stringify(im.settings) !== JSON.stringify(state.meta.defaults);
       refreshThumb(im);
     }
-    if (state.view === "develop") { syncPanel(); scheduleRender(0); }
-    toast(`Pasted settings onto ${ids.length} image${ids.length > 1 ? "s" : ""}`);
-  } catch (e) { toast("Paste failed: " + e.message, true); }
+    if (state.view === "develop") { syncPanel(); busyWanted = true; scheduleRender(0); }
+    toast(`${doneMsg} ${ids.length} image${ids.length > 1 ? "s" : ""}`);
+  } catch (e) { toast("Failed: " + e.message, true); }
 }
 
 /* ---------- file picker (server-side filesystem browser) ---------- */
@@ -562,21 +720,87 @@ function pickFs({ mode, title, start }) {
       $("#fsOk").disabled = mode === "files" ? sel.size === 0 : !cur;
       $("#fsSel").textContent = mode === "files" ? `${sel.size} file${sel.size === 1 ? "" : "s"} selected` : "";
     };
+    $("#fsView").value = store.get("fsView", "files");
+    const onView = () => { store.set("fsView", $("#fsView").value); draw(); };
+    let places = [];
+    const favName = p => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
+    function drawPlaces() {
+      const favs = store.get("favorites", []);
+      $("#fsPlaces").innerHTML = [{ name: "Computer", path: "" }, ...places].map(p => `<div data-p="${esc(p.path)}">${esc(p.name)}</div>`).join("")
+        + favs.map(p => `<div class="fav" data-p="${esc(p)}" title="${esc(p)}"><span class="star">★</span>${esc(favName(p))}</div>`).join("");
+      const isFav = !!cur && favs.includes(cur);
+      $("#fsFav").disabled = !cur;
+      $("#fsFav").classList.toggle("remove", isFav);
+      $("#fsFavTxt").textContent = isFav ? "Remove from favorites" : "Add to favorites";
+      $("#fsFav").title = isFav ? "Remove this folder from favorites" : "Add this folder to favorites";
+    }
+    const onFav = () => {
+      if (!cur) return;
+      const favs = store.get("favorites", []);
+      store.set("favorites", favs.includes(cur) ? favs.filter(f => f !== cur) : [...favs, cur]);
+      drawPlaces();
+    };
+    // Thumbnails load through a small queue (3 at a time, visible ones only) so they never use up all the browser's
+    // connections: navigating (Up, a place, a folder) must always get through, and it cancels whatever is still queued.
+    let thumbCtl = null, thumbObs = null, thumbQ = [];
+    const thumbCache = new Map();  // path -> object URL, for the folder being shown
+    function stopThumbs() {
+      thumbCtl?.abort(); thumbCtl = null; thumbObs?.disconnect(); thumbObs = null; thumbQ = [];
+    }
+    function clearThumbCache() { thumbCache.forEach(u => URL.revokeObjectURL(u)); thumbCache.clear(); }
+    function startThumbs() {
+      stopThumbs();
+      const imgs = $$("#fsList img[data-src]");
+      if (!imgs.length) return;
+      const ctl = thumbCtl = new AbortController();
+      let active = 0;  // per run, so a cancelled run can't throw the count off
+      const pump = () => {
+        while (active < 3 && thumbQ.length && !ctl.signal.aborted) {
+          const img = thumbQ.shift(), path = img.dataset.path;
+          active++;
+          fetch(img.dataset.src, { signal: ctl.signal })
+            .then(r => { if (!r.ok) throw new Error("thumb"); return r.blob(); })
+            .then(b => { if (ctl.signal.aborted) return; const u = URL.createObjectURL(b); thumbCache.set(path, u); img.src = u; })
+            .catch(() => { if (!ctl.signal.aborted) img.parentNode.textContent = "📄"; })
+            .finally(() => { active--; pump(); });
+        }
+      };
+      thumbObs = new IntersectionObserver(es => {
+        for (const e of es) if (e.isIntersecting) { thumbObs.unobserve(e.target); thumbQ.push(e.target); }
+        pump();
+      }, { root: $("#fsList"), rootMargin: "200px" });
+      imgs.forEach(i => thumbObs.observe(i));
+    }
     async function go(path, selectPath) {
+      stopThumbs();  // drop queued thumbnails straight away so this navigation isn't held up
       try {
         const r = await api("GET", `/api/fs?path=${encodeURIComponent(path)}&all=${$("#fsAll").checked ? 1 : 0}`);
+        if (r.path !== cur) clearThumbCache();
         cur = r.path; entries = r.entries; sel = new Set(selectPath ? [selectPath] : []); anchor = null;
         $("#fsPath").value = r.path; $("#fsUp").disabled = r.parent === null;
         $("#fsUp").dataset.p = r.parent ?? "";
-        $("#fsPlaces").innerHTML = [{ name: "Computer", path: "" }, ...r.places].map(p => `<div data-p="${esc(p.path)}">${esc(p.name)}</div>`).join("");
-        draw(); store.set("fsPath", cur);
+        places = r.places;
+        drawPlaces(); draw(); store.set("fsPath", cur);
       } catch (e) { $("#fsSel").textContent = e.message; }
     }
     function draw() {
+      const thumbs = $("#fsView").value === "thumbs";
+      $("#fsList").classList.toggle("thumbs", thumbs);
+      if (thumbs) {  // widen tiles so each row fills the available width
+        const w = $("#fsList").clientWidth - 4, gap = 8, cols = Math.max(1, Math.floor((w + gap) / (124 + gap)));
+        $("#fsList").style.setProperty("--tile", Math.floor((w - gap * (cols - 1)) / cols) + "px");
+      }
       $("#fsList").innerHTML = entries.map((e, i) => {
         const dim = !e.dir && !e.supported ? " dim" : "";
+        if (thumbs) {
+          const cached = thumbCache.get(e.path);
+          const inner = e.dir ? "📁" : e.supported
+            ? `<img alt="" data-path="${esc(e.path)}" ${cached ? `src="${cached}"` : `data-src="/api/fs/thumb?path=${encodeURIComponent(e.path)}"`}>` : "📄";
+          return `<div class="ent${sel.has(e.path) ? " sel" : ""}${dim}" data-i="${i}" title="${esc(e.name)}"><div class="tb">${inner}</div><div class="nm">${esc(e.name)}</div></div>`;
+        }
         return `<div class="ent${sel.has(e.path) ? " sel" : ""}${dim}" data-i="${i}"><span>${e.dir ? "📁" : "🖼"}</span><span>${esc(e.name)}</span><span class="sz">${e.dir || !e.size ? "" : fmtBytes(e.size)}</span></div>`;
       }).join("") || `<div class="ent dim">Nothing here</div>`;
+      if (thumbs) startThumbs(); else stopThumbs();
       upd();
     }
     const onList = e => {
@@ -607,6 +831,7 @@ function pickFs({ mode, title, start }) {
     const onUp = () => go($("#fsUp").dataset.p);
     const onAll = () => go(cur);
     const finish = ok => {
+      stopThumbs(); clearThumbCache();
       cleanup();
       dlg.close();
       if (!ok) return resolve(null);
@@ -619,8 +844,10 @@ function pickFs({ mode, title, start }) {
       $("#fsPath").removeEventListener("keydown", onKey); $("#fsUp").removeEventListener("click", onUp);
       $("#fsAll").removeEventListener("change", onAll); $("#fsOk").removeEventListener("click", onOk);
       $("#fsCancel").removeEventListener("click", onCancel); dlg.removeEventListener("cancel", onCancel);
+      $("#fsFav").removeEventListener("click", onFav); $("#fsView").removeEventListener("change", onView);
       $("#fsSelAll").removeEventListener("click", onSelAll); $("#fsSelNone").removeEventListener("click", onSelNone);
     };
+    $("#fsFav").addEventListener("click", onFav); $("#fsView").addEventListener("change", onView);
     $("#fsSelAll").addEventListener("click", onSelAll); $("#fsSelNone").addEventListener("click", onSelNone);
     $("#fsList").addEventListener("click", onList); $("#fsList").addEventListener("dblclick", onList);
     $("#fsPlaces").addEventListener("click", onPlaces); $("#fsGo").addEventListener("click", onGo);
@@ -638,6 +865,10 @@ async function addPaths(res) {
     if (r.duplicates) msg += `, ${r.duplicates} already in library`;
     if (r.skipped.length) msg += `, ${r.skipped.length} unsupported skipped`;
     toast(msg, r.added === 0 && r.skipped.length > 0);
+    if (state.view === "develop" && r.last_id) {  // developing: jump to the last photo that was just added
+      flushAllSaves();
+      state.focus = r.last_id; state.sel = new Set([r.last_id]);
+    }
     await loadLibs(); await loadImages(true); syncHash("replace");
   } catch (e) { toast(e.message, true); }
 }
@@ -1115,6 +1346,67 @@ function wireLibMenu() {
   window.addEventListener("resize", () => closeLibMenu());
 }
 
+/* ---------- presets ---------- */
+async function loadPresets() {
+  try { state.presets = await api("GET", "/api/presets"); } catch { state.presets = []; }
+  if (!$("#presetMenu").hidden) renderPresetMenu();
+}
+async function saveAsPreset() {
+  const im = focusImage();
+  if (!im) return toast("Open an image to save its settings as a preset", true);
+  flushAllSaves();
+  let n = state.presets.length + 1;
+  while (state.presets.some(p => p.name.toLowerCase() === `preset ${n}`)) n++;
+  const name = (await promptModal({ title: "Save as preset", message: "Name for this preset:", value: `Preset ${n}`, okText: "Save" }))?.trim();
+  if (!name) return;
+  const exists = state.presets.some(p => p.name.toLowerCase() === name.toLowerCase());
+  if (exists && !await confirmModal({ title: `Replace preset "${name}"?`, message: "A preset with this name exists. Its settings will be replaced.", okText: "Replace", danger: true })) return;
+  try {
+    state.presets = await api("POST", "/api/presets", { name, settings: im.settings, overwrite: exists });
+    toast(`Saved preset "${name}"`);
+  } catch (e) { toast("Could not save preset: " + e.message, true); }
+}
+function renderPresetMenu() {
+  $("#presetList").innerHTML = state.presets.length
+    ? state.presets.map(p => `<button class="ctxItem" role="menuitem" data-id="${p.id}" title="Apply to the selected images"><span class="n">${esc(p.name)}</span><span class="x" data-del="${p.id}" title="Delete preset">✕</span></button>`).join("")
+    : `<div class="none">No presets yet. Use <b>Save as preset</b> in the panel on the right.</div>`;
+}
+function openPresetMenu() {
+  closeContextMenu(); closeLibMenu();
+  const btn = $("#presetsBtn"), menu = $("#presetMenu"), r = btn.getBoundingClientRect();
+  renderPresetMenu();
+  menu.hidden = false;
+  menu.style.minWidth = Math.max(240, r.width) + "px";
+  menu.style.left = Math.max(6, Math.min(r.left, innerWidth - menu.offsetWidth - 6)) + "px";
+  menu.style.top = r.bottom + 6 + "px";
+  btn.classList.add("open"); btn.setAttribute("aria-expanded", "true");
+}
+function closePresetMenu() {
+  const menu = $("#presetMenu"); if (menu.hidden) return;
+  menu.hidden = true;
+  $("#presetsBtn").classList.remove("open"); $("#presetsBtn").setAttribute("aria-expanded", "false");
+}
+function wirePresets() {
+  const menu = $("#presetMenu"), btn = $("#presetsBtn");
+  btn.onclick = () => menu.hidden ? openPresetMenu() : closePresetMenu();
+  $("#savePreset").onclick = saveAsPreset;
+  menu.addEventListener("click", async e => {
+    const del = e.target.closest("[data-del]");
+    const p = state.presets.find(x => x.id === +(del ?? e.target.closest(".ctxItem") ?? {}).dataset?.[del ? "del" : "id"]);
+    if (!p) return;
+    closePresetMenu();
+    if (del) {
+      if (!await confirmModal({ title: `Delete preset "${p.name}"?`, message: "Images already using these settings are not changed.", okText: "Delete", danger: true })) return;
+      try { state.presets = await api("DELETE", `/api/presets/${p.id}`); toast(`Deleted preset "${p.name}"`); }
+      catch (err) { toast("Could not delete: " + err.message, true); }
+    } else applySettingsToSelection(p.settings, `Applied "${p.name}" to`);
+  });
+  menu.addEventListener("keydown", e => { if (e.key === "Escape") { closePresetMenu(); btn.focus(); } });
+  document.addEventListener("pointerdown", e => { if (!menu.hidden && !e.target.closest("#presetMenu, #presetsBtn")) closePresetMenu(); }, true);
+  window.addEventListener("blur", closePresetMenu);
+  window.addEventListener("resize", closePresetMenu);
+}
+
 /* ---------- right-click menu ---------- */
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
 const ctx = { open: false, ids: [] };
@@ -1134,15 +1426,27 @@ async function toggleFeatured() {
     toast(featured ? `Marked ${plural(ims.length, "image", "images")} as featured` : `Removed featured from ${plural(ims.length, "image", "images")}`);
   } catch (e) { toast("Could not update featured: " + e.message, true); }
 }
-function openContextMenu(x, y, { alignRight = false, fromButton = false } = {}) {
+async function removeSelected() {
+  if (!state.sel.size) return;
+  const n = state.sel.size;
+  if (!await confirmModal({ title: `Remove ${plural(n, "image", "images")} from this library?`,
+    message: "Their settings and cached previews are deleted. Anything also used by another library is kept for it. The image files on disk are not deleted.", okText: "Remove", danger: true })) return;
+  try {
+    await api("POST", "/api/images/remove", { ids: [...state.sel] });
+    state.focus = null; await loadLibs(); await loadImages(); syncHash("replace");
+  } catch (e) { toast("Could not remove: " + e.message, true); }
+}
+function openContextMenu(x, y,{ alignRight = false, fromButton = false } = {}) {
   const menu = $("#ctxMenu"), n = state.sel.size;
   const only = n === 1 ? byId([...state.sel][0]) : null;
   $("#ctxHead").textContent = n > 1 ? `${n} images selected` : only ? only.name : "No image selected";
   $("#kCopy").textContent = IS_MAC ? "⌘C" : "Ctrl+C"; $("#kPaste").textContent = IS_MAC ? "⌘V" : "Ctrl+V";
   $('#ctxMenu [data-act="copy"]').disabled = !(focusImage() ?? only);
   $('#ctxMenu [data-act="paste"]').disabled = n === 0;
+  $('#ctxMenu [data-act="clip"]').disabled = n === 0;
   $('#ctxMenu [data-act="addlib"]').disabled = n === 0;
   $('#ctxMenu [data-act="feature"]').disabled = n === 0;
+  $('#ctxMenu [data-act="remove"]').disabled = n === 0;
   $("#ctxFeatureLbl").textContent = selectionAllFeatured() ? "Remove featured" : "Mark as featured";
   menu.hidden = false; ctx.open = true;
   const w = menu.offsetWidth, h = menu.offsetHeight;  // keep it on screen, flipping up/left near the edges
@@ -1244,8 +1548,10 @@ function wireContextMenu() {
     closeContextMenu();
     if (b.dataset.act === "copy") copySettings(null);
     else if (b.dataset.act === "paste") pasteSettings();
+    else if (b.dataset.act === "clip") copyImageToClipboard();
     else if (b.dataset.act === "addlib") openAddToLibrary();
     else if (b.dataset.act === "feature") toggleFeatured();
+    else if (b.dataset.act === "remove") removeSelected();
   });
   $("#addLibCancel").onclick = () => $("#addLibDlg").close();
   $("#addLibSearch").addEventListener("input", renderAddList);
@@ -1328,6 +1634,21 @@ function wireAbout() {
   $("#aboutClose").onclick = () => $("#aboutDlg").close();
 }
 
+/* ---------- interface settings dialog ---------- */
+function openUiSettings() {
+  const dlg = $("#uiDlg");
+  const rows = [["panVelocity", "#uiVel", "#uiVelNum", 3], ["panDamping", "#uiDamp", "#uiDampNum", 100], ["panUpdate", "#uiUpd", "#uiUpdNum", 2], ["panThreshold", "#uiThr", "#uiThrNum", 300]];
+  const show = () => { const u = uiSettings(); for (const [k, r, n] of rows) { $(r).value = u[k]; $(n).value = u[k]; } };
+  const save = (k, v, max) => { const o = store.get("ui", {}); o[k] = Math.min(max, Math.max(0, Math.round((+v || 0) * 100) / 100)); store.set("ui", o); show(); };
+  for (const [k, r, n, max] of rows) {
+    $(r).oninput = () => save(k, $(r).value, max);
+    $(n).onchange = () => save(k, $(n).value, max);
+  }
+  $("#uiReset").onclick = () => { store.set("ui", {}); show(); };
+  $("#uiClose").onclick = () => dlg.close();
+  show(); dlg.showModal();
+}
+
 /* ---------- wiring ---------- */
 function wire() {
   // Tabs must sit on the header's bottom edge, so when the header wraps (narrow window, export bar showing) they drop to the last row.
@@ -1335,6 +1656,7 @@ function wire() {
   new ResizeObserver(() => top.classList.toggle("wrapped", top.offsetHeight > 75)).observe(top);
   wireAbout();
   wireLibMenu();
+  wirePresets();
   wireLibManager();
   wireContextMenu();
   $("#addFiles").onclick = async () => addPaths(await pickFs({ mode: "files", title: "Add files — from any folder on this computer" }));
@@ -1342,14 +1664,7 @@ function wire() {
   $("#tabLib").onclick = () => setView("library");
   $("#tabDev").onclick = () => setView("develop");
   $("#selAll").onclick = () => { state.sel = new Set(state.images.map(i => i.id)); refreshSelectionUI(); };
-  $("#removeSel").onclick = async () => {
-    if (!state.sel.size) return;
-    const n = state.sel.size;
-    if (!await confirmModal({ title: `Remove ${plural(n, "image", "images")} from this library?`,
-      message: "Their settings in this library are removed too. The image files on disk are not deleted.", okText: "Remove", danger: true })) return;
-    await api("POST", "/api/images/remove", { ids: [...state.sel] });
-    state.focus = null; await loadLibs(); await loadImages(); syncHash("replace");
-  };
+  $("#removeSel").onclick = removeSelected;
   $("#thumbSize").oninput = e => { $("#grid").style.setProperty("--ts", e.target.value + "px"); store.set("ts", +e.target.value); };
   $("#copyCancel").onclick = () => $("#copyDlg").close();
   $("#copyOk").onclick = () => { copySettings($$("#copyGroups input:checked").map(i => i.value)); $("#copyDlg").close(); };
@@ -1365,10 +1680,13 @@ function wire() {
     if (r) $("#expDest").value = r.paths[0];
   };
   $("#cacheBtn").onclick = openCache;
+  $("#settingsBtn").onclick = openUiSettings;
   $("#cacheClose").onclick = () => $("#cacheDlg").close();
   $("#cacheClear").onclick = async () => {
     const c = await api("POST", "/api/cache/clear");
-    $("#cacheInfo").textContent = `${c.files} files · ${fmtBytes(c.bytes)}`; toast("Temp data cleared"); buildLists();
+    $("#cacheInfo").textContent = `${c.files} files · ${fmtBytes(c.bytes)}`; toast("Temp data cleared");
+    $("#cacheDlg").close();
+    thumbBust = Date.now(); buildLists();  // thumbnails go black with a spinner, then reload
   };
   $("#resetAll").onclick = () => resetKeys(state.meta.schema.map(p => p.key));
   window.addEventListener("resize", () => { if (state.view !== "develop") return; layoutImage(); updateZoomUI(); scheduleRender(150); });
@@ -1378,42 +1696,62 @@ function wire() {
   // Drag the filmstrip sideways to scroll it. A real drag must not also count as a click on a thumbnail.
   const film = $("#filmstrip");
   let fd = null, filmMoved = false;
+  const fvt = velocityTracker();
   film.addEventListener("pointerdown", e => {
     if (e.button !== 0 || e.pointerType === "touch") return;  // touch already scrolls natively
-    fd = { x: e.clientX, left: film.scrollLeft, id: e.pointerId }; filmMoved = false;
+    stopGlide();
+    fd = { x: e.clientX, left: film.scrollLeft, id: e.pointerId }; filmMoved = false; fvt.add(e);
   });
   film.addEventListener("pointermove", e => {
     if (!fd) return;
-    const dx = e.clientX - fd.x;
+    const dx = e.clientX - fd.x; fvt.add(e);
     if (!filmMoved && Math.abs(dx) > 5) { filmMoved = true; film.setPointerCapture(fd.id); film.classList.add("dragging"); }
     if (filmMoved) film.scrollLeft = fd.left - dx;
   });
-  const endFilmDrag = () => { fd = null; film.classList.remove("dragging"); };
-  film.addEventListener("pointerup", endFilmDrag); film.addEventListener("pointercancel", endFilmDrag);
+  const endFilmDrag = (e, cancelled) => {
+    const was = fd && filmMoved; fd = null; film.classList.remove("dragging");
+    const [vx] = fvt.release();
+    if (!was || cancelled) return;
+    glide(vx, 0, dx => { const l0 = film.scrollLeft; film.scrollLeft = l0 - dx; return [film.scrollLeft !== l0, true]; });
+  };
+  film.addEventListener("pointerup", endFilmDrag); film.addEventListener("pointercancel", e => endFilmDrag(e, true));
   film.addEventListener("click", e => { if (filmMoved) { e.stopPropagation(); e.preventDefault(); filmMoved = false; } }, true);
 
   // Zoom & pan on the stage.
   const stage = $("#stage");
   stage.addEventListener("wheel", e => {
     if (!view.iw) return;
-    e.preventDefault();
+    e.preventDefault(); stopGlide();
     const r = stage.getBoundingClientRect();
     zoomTo(curZ() * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0018)), e.clientX - r.left, e.clientY - r.top);
   }, { passive: false });
   let drag = null;
+  const vt = velocityTracker();
   stage.addEventListener("pointerdown", e => {
-    if (e.button !== 0 || view.fit || !view.iw || e.target.closest("#zoomBar, #splitLine, #abBtn")) return;
-    drag = { x: e.clientX, y: e.clientY }; stage.setPointerCapture(e.pointerId); stage.classList.add("panning");
+    if (e.button !== 0 || e.target.closest("#zoomBar, #splitLine, #abBtn")) return;
+    stopGlide();  // grabbing the image stops any glide
+    if (view.fit || !view.iw) return;
+    drag = { x: e.clientX, y: e.clientY }; vt.add(e); stage.setPointerCapture(e.pointerId); stage.classList.add("panning");
   });
   stage.addEventListener("pointermove", e => {
     if (!drag) return;
     const k = dpr() / curZ();
     view.cx -= (e.clientX - drag.x) * k; view.cy -= (e.clientY - drag.y) * k;
-    drag.x = e.clientX; drag.y = e.clientY;
-    clampCenter(); layoutImage();
+    drag.x = e.clientX; drag.y = e.clientY; vt.add(e);
+    clampCenter(); layoutImage(); liveRender();
   });
-  const endDrag = () => { if (!drag) return; drag = null; stage.classList.remove("panning"); scheduleRender(60); };
-  stage.addEventListener("pointerup", endDrag); stage.addEventListener("pointercancel", endDrag);
+  const endDrag = (e, cancelled) => {
+    if (!drag) return; drag = null; stage.classList.remove("panning");
+    const [vx, vy] = vt.release();
+    if (cancelled) return settleRender();
+    glide(vx, vy, (dx, dy) => {
+      const k = dpr() / curZ(), x0 = view.cx, y0 = view.cy;
+      view.cx -= dx * k; view.cy -= dy * k; clampCenter(); layoutImage(); liveRender();
+      return [view.cx !== x0 || dx === 0, view.cy !== y0 || dy === 0];
+    }, settleRender);
+    if (!glideId) settleRender();
+  };
+  stage.addEventListener("pointerup", endDrag); stage.addEventListener("pointercancel", e => endDrag(e, true));
   stage.addEventListener("dblclick", e => {
     if (e.target.closest("#zoomBar, #splitLine, #abBtn")) return;
     const r = stage.getBoundingClientRect();
@@ -1467,7 +1805,7 @@ function wire() {
     state.meta = await api("GET", "/api/meta");
     if (!state.meta.raw_available) toast("rawpy is not installed — RAW files are unavailable", true);
     const ts = store.get("ts", 190); $("#thumbSize").value = ts; $("#grid").style.setProperty("--ts", ts + "px");
-    buildPanel(); wire();
+    buildPanel(); wire(); loadPresets();
     const route = parseHash();
     await pending.flush();                 // settings that were still waiting to be saved when the page closed
     if (route) state.focus = route.img;

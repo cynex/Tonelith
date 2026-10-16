@@ -43,6 +43,7 @@
   </div>
   <div class="group">
     <button id="cacheBtn" class="red" title="Temporary data folder">Temp</button>
+    <button id="settingsBtn" title="Interface settings">⚙ Settings</button>
   </div>
 </header>
 
@@ -85,6 +86,8 @@
         <div id="imgInfo"></div>
         <div class="panelActions">
           <button id="resetAll">Reset all</button>
+          <button id="presetsBtn" class="dd actions" aria-haspopup="menu" aria-expanded="false" title="Apply a saved preset to the selected images" hidden>Presets <span class="ddChev">▾</span></button>
+          <button id="savePreset" title="Save this image's settings as a preset">Save as preset</button>
         </div>
       </div>
       <div id="sliders"></div>
@@ -96,9 +99,17 @@
 
 <!-- Open from disk -->
 <dialog id="fsDlg">
-  <h3 id="fsTitle">Open</h3>
+  <div class="fsHead">
+    <h3 id="fsTitle">Open</h3>
+    <div class="fsHeadR">
+    <label class="fsView">Show as
+      <select id="fsView"><option value="files">Files</option><option value="thumbs">Thumbnails</option></select>
+    </label>
+    <button id="fsFav"title="Add this folder to favorites"><span class="star">★</span> <span id="fsFavTxt">Add to favorites</span></button>
+    </div>
+  </div>
   <div class="fsBar">
-    <button id="fsUp">↑ Up</button>
+    <button id="fsUp"><span class="upIcon">▴</span> Up</button>
     <input id="fsPath" type="text" spellcheck="false" placeholder="Type or paste a path, press Enter">
     <button id="fsGo">Go</button>
   </div>
@@ -106,14 +117,14 @@
     <div id="fsPlaces"></div>
     <div id="fsList"></div>
   </div>
-  <div class="fsOpts">
-    <button id="fsSelAll" title="Select every supported image in this folder">Select all in folder</button>
-    <button id="fsSelNone">Clear</button>
-    <label><input id="fsAll" type="checkbox"> Show all files</label>
-    <label id="fsRecWrap"><input id="fsRec" type="checkbox"> Include sub-folders</label>
+  <div class="dlgBtns fsFoot">
+    <div class="fsOpts">
+      <button id="fsSelAll" title="Select every supported image in this folder">Select all in folder</button>
+      <button id="fsSelNone">Clear</button>
+      <label><input id="fsAll" type="checkbox"> Show all files</label>
+      <label id="fsRecWrap"><input id="fsRec" type="checkbox"> Include sub-folders</label>
+    </div>
     <span class="spacer"></span><span id="fsSel"></span>
-  </div>
-  <div class="dlgBtns">
     <button id="fsCancel">Cancel</button>
     <button id="fsOk" class="primary">Open</button>
   </div>
@@ -179,20 +190,44 @@
   <div class="dlgBtns"><button id="msgCancel">Cancel</button><button id="msgOk" class="primary">OK</button></div>
 </dialog>
 
+<!-- Presets dropdown (Develop tab) -->
+<div id="presetMenu" role="menu" hidden>
+  <div id="presetList"></div>
+</div>
+
 <!-- Library dropdown -->
 <div id="libMenu" hidden>
   <input id="libMenuSearch" type="text" placeholder="Search libraries…" spellcheck="false" autocomplete="off">
   <div id="libMenuList" role="listbox"></div>
 </div>
 
+<!-- Temperature / tint strength -->
+<dialog id="wbDlg">
+  <h3 id="wbTitle">Strength</h3>
+  <p class="dim">Multiplies how far this slider moves the image from its default. 1.00× is the standard strength; higher is more pronounced, lower is subtler. Applies to every image and to exports.</p>
+  <div class="wbRow">
+    <input id="wbRange" type="range">
+    <input id="wbNum" type="number" step="0.01"><span>×</span>
+  </div>
+  <div class="dlgBtns wbBtns">
+    <button id="wbReset">Reset to default</button>
+    <span class="spacer"></span>
+    <button id="wbCancel">Cancel</button>
+    <button id="wbSave" class="primary">Save</button>
+  </div>
+</dialog>
+
 <!-- Right-click menu -->
 <div id="ctxMenu" role="menu" hidden>
   <div id="ctxHead"></div>
   <button class="ctxItem" role="menuitem" data-act="copy"><span>Copy settings</span><kbd id="kCopy"></kbd></button>
   <button class="ctxItem" role="menuitem" data-act="paste"><span>Paste settings</span><kbd id="kPaste"></kbd></button>
+  <button class="ctxItem" role="menuitem" data-act="clip"><span>Copy to clipboard</span></button>
   <div class="ctxSep"></div>
   <button class="ctxItem" role="menuitem" data-act="feature"><span id="ctxFeatureLbl">Mark as featured</span><span class="ctxStar">★</span></button>
   <button class="ctxItem" role="menuitem" data-act="addlib"><span>Add to library…</span></button>
+  <div class="ctxSep"></div>
+  <button class="ctxItem danger" role="menuitem" data-act="remove"><span>Remove from library…</span></button>
 </div>
 
 <!-- Right-click: add the selection to a library -->
@@ -263,6 +298,31 @@
   <p>Decoded working copies and thumbnails are processed here. Your original files are never modified, and the catalog stores only references and settings.</p>
   <p><code id="cachePath"></code><br><span id="cacheInfo"></span></p>
   <div class="dlgBtns"><button id="cacheClose">Close</button><button id="cacheClear">Clear temp data</button></div>
+</dialog>
+
+<!-- Interface settings (kept in this browser only) -->
+<dialog id="uiDlg">
+  <h3>Interface settings</h3>
+  <p class="dim">Saved in this browser only. Changes apply immediately.</p>
+  <h4>Drag to pan</h4>
+  <div class="uiRow" title="How much speed the image keeps when you let go. 0 turns the glide off.">
+    <label for="uiVelNum">Velocity</label>
+    <input id="uiVel" type="range" min="0" max="3" step="0.05"><input id="uiVelNum" type="number" min="0" max="3" step="0.05"><span>×</span>
+  </div>
+  <div class="uiRow" title="How quickly the glide slows down. Higher stops sooner.">
+    <label for="uiDampNum">Damping</label>
+    <input id="uiDamp" type="range" min="0" max="100" step="1"><input id="uiDampNum" type="number" min="0" max="100" step="1"><span>%</span>
+  </div>
+  <div class="uiRow" title="While you drag or glide a zoomed image, how often the newly visible area is re-rendered. 0 waits until you let go.">
+    <label for="uiUpdNum">Update interval</label>
+    <input id="uiUpd" type="range" min="0" max="2" step="0.05"><input id="uiUpdNum" type="number" min="0" max="2" step="0.05"><span>s</span>
+  </div>
+  <div class="uiRow" title="The image is only re-rendered once the view has moved at least this far since the last render. Stops the loading indicator flashing for tiny movements, such as the end of a glide.">
+    <label for="uiThrNum">Distance threshold</label>
+    <input id="uiThr" type="range" min="0" max="300" step="1"><input id="uiThrNum" type="number" min="0" max="300" step="1"><span>px</span>
+  </div>
+  <p class="dim">Velocity and damping also apply to dragging the filmstrip.</p>
+  <div class="dlgBtns uiBtns"><button id="uiReset">Reset to defaults</button><span class="spacer"></span><button id="uiClose" class="primary">Close</button></div>
 </dialog>
 
 <script src="/static/app.js"></script>
