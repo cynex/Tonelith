@@ -708,14 +708,14 @@ async function applySettingsToSelection(settings, doneMsg) {
 }
 
 /* ---------- file picker (server-side filesystem browser) ---------- */
-function pickFs({ mode, title, start }) {
+function pickFs({ mode, title, start, types = "", okText = "" }) {  // types: "video" lists movie files; one file at a time
   return new Promise(resolve => {
     const dlg = $("#fsDlg");
     let cur = start || store.get("fsPath", "~"), sel = new Set(), entries = [], anchor = null;
-    $("#fsSelAll").hidden = $("#fsSelNone").hidden = mode !== "files";
+    $("#fsSelAll").hidden = $("#fsSelNone").hidden = mode !== "files" || !!types;
     $("#fsTitle").textContent = title;
     $("#fsRecWrap").hidden = mode !== "folder";
-    $("#fsOk").textContent = mode === "files" ? "Add" : mode === "folder" ? "Add this folder" : "Choose this folder";
+    $("#fsOk").textContent = okText || mode === "files" ? okText || "Add" : mode === "folder" ? "Add this folder" : "Choose this folder";
     const upd = () => {
       $("#fsOk").disabled = mode === "files" ? sel.size === 0 : !cur;
       $("#fsSel").textContent = mode === "files" ? `${sel.size} file${sel.size === 1 ? "" : "s"} selected` : "";
@@ -774,7 +774,7 @@ function pickFs({ mode, title, start }) {
     async function go(path, selectPath) {
       stopThumbs();  // drop queued thumbnails straight away so this navigation isn't held up
       try {
-        const r = await api("GET", `/api/fs?path=${encodeURIComponent(path)}&all=${$("#fsAll").checked ? 1 : 0}`);
+        const r = await api("GET", `/api/fs?path=${encodeURIComponent(path)}&all=${$("#fsAll").checked ? 1 : 0}${types ? "&types=" + types : ""}`);
         if (r.path !== cur) clearThumbCache();
         cur = r.path; entries = r.entries; sel = new Set(selectPath ? [selectPath] : []); anchor = null;
         $("#fsPath").value = r.path; $("#fsUp").disabled = r.parent === null;
@@ -794,11 +794,11 @@ function pickFs({ mode, title, start }) {
         const dim = !e.dir && !e.supported ? " dim" : "";
         if (thumbs) {
           const cached = thumbCache.get(e.path);
-          const inner = e.dir ? "📁" : e.supported
+          const inner = e.dir ? "📁" : e.supported && types ? "🎞" : e.supported
             ? `<img alt="" data-path="${esc(e.path)}" ${cached ? `src="${cached}"` : `data-src="/api/fs/thumb?path=${encodeURIComponent(e.path)}"`}>` : "📄";
           return `<div class="ent${sel.has(e.path) ? " sel" : ""}${dim}" data-i="${i}" title="${esc(e.name)}"><div class="tb">${inner}</div><div class="nm">${esc(e.name)}</div></div>`;
         }
-        return `<div class="ent${sel.has(e.path) ? " sel" : ""}${dim}" data-i="${i}"><span>${e.dir ? "📁" : "🖼"}</span><span>${esc(e.name)}</span><span class="sz">${e.dir || !e.size ? "" : fmtBytes(e.size)}</span></div>`;
+        return `<div class="ent${sel.has(e.path) ? " sel" : ""}${dim}" data-i="${i}"><span>${e.dir ? "📁" : types ? "🎞" : "🖼"}</span><span>${esc(e.name)}</span><span class="sz">${e.dir || !e.size ? "" : fmtBytes(e.size)}</span></div>`;
       }).join("") || `<div class="ent dim">Nothing here</div>`;
       if (thumbs) startThumbs(); else stopThumbs();
       upd();
@@ -809,6 +809,7 @@ function pickFs({ mode, title, start }) {
       if (ent.dir) { go(ent.path); return; }
       if (mode !== "files") return;
       if (e.type === "dblclick") { sel = new Set([ent.path]); finish(true); return; }
+      if (types) { sel = new Set([ent.path]); anchor = +row.dataset.i; draw(); return; }  // movies: one at a time
       const i = +row.dataset.i, additive = e.ctrlKey || e.metaKey;
       if (e.shiftKey && anchor !== null) {
         const [lo, hi] = anchor < i ? [anchor, i] : [i, anchor];
@@ -1436,6 +1437,25 @@ async function removeSelected() {
     state.focus = null; await loadLibs(); await loadImages(); syncHash("replace");
   } catch (e) { toast("Could not remove: " + e.message, true); }
 }
+/* Permanently delete the selected images' files from disk (and every catalog entry for them). */
+async function deleteSelectedFiles() {
+  const ids = [...state.sel]; if (!ids.length) return;
+  const files = [...new Set(ids.map(id => byId(id)?.path).filter(Boolean))];
+  const first = byId(ids[0])?.name ?? "this file";
+  const ok = await confirmModal({
+    title: `Delete ${files.length === 1 ? `"${first}"` : plural(files.length, "file", "files")} from disk?`,
+    message: `${files.length === 1 ? "The file" : "These files"} will be permanently deleted from your computer. This cannot be undone.${NL}${NL}` +
+      "Every library entry that uses them is removed too, including in other libraries.",
+    okText: "Delete from disk", danger: true });
+  if (!ok) return;
+  try {
+    ids.forEach(id => { pending.clear(id); clearTimeout(saveTimers.get(id)); saveTimers.delete(id); });  // nothing left to save for them
+    const r = await api("POST", "/api/images/delete-files", { ids });
+    state.focus = null; await loadLibs(); await loadImages(); syncHash("replace");
+    if (r.failed.length) infoModal({ title: `Deleted ${plural(r.deleted, "file", "files")}; ${r.failed.length} could not be deleted`, message: r.failed.join(NL) });
+    else toast(`Deleted ${plural(r.deleted, "file", "files")} from disk`);
+  } catch (e) { toast("Could not delete: " + e.message, true); }
+}
 function openContextMenu(x, y,{ alignRight = false, fromButton = false } = {}) {
   const menu = $("#ctxMenu"), n = state.sel.size;
   const only = n === 1 ? byId([...state.sel][0]) : null;
@@ -1447,6 +1467,7 @@ function openContextMenu(x, y,{ alignRight = false, fromButton = false } = {}) {
   $('#ctxMenu [data-act="addlib"]').disabled = n === 0;
   $('#ctxMenu [data-act="feature"]').disabled = n === 0;
   $('#ctxMenu [data-act="remove"]').disabled = n === 0;
+  $('#ctxMenu [data-act="delete"]').disabled = n === 0;
   $("#ctxFeatureLbl").textContent = selectionAllFeatured() ? "Remove featured" : "Mark as featured";
   menu.hidden = false; ctx.open = true;
   const w = menu.offsetWidth, h = menu.offsetHeight;  // keep it on screen, flipping up/left near the edges
@@ -1552,6 +1573,7 @@ function wireContextMenu() {
     else if (b.dataset.act === "addlib") openAddToLibrary();
     else if (b.dataset.act === "feature") toggleFeatured();
     else if (b.dataset.act === "remove") removeSelected();
+    else if (b.dataset.act === "delete") deleteSelectedFiles();
   });
   $("#addLibCancel").onclick = () => $("#addLibDlg").close();
   $("#addLibSearch").addEventListener("input", renderAddList);
@@ -1649,6 +1671,99 @@ function openUiSettings() {
   show(); dlg.showModal();
 }
 
+/* ---------- movie frame extraction runs in the background ---------- */
+let movieTimer = null, movieAdded = -1;
+/* Add images the library gained since the last look, without rebuilding the grid or touching the open image. */
+async function appendNewImages() {
+  const list = await api("GET", `/api/libraries/${state.libId}/images`);
+  const have = new Set(state.images.map(i => i.id));
+  const fresh = list.filter(i => !have.has(i.id));
+  if (!fresh.length) return;
+  for (const im of fresh) { state.images.push(im); $("#grid").append(makeThumb(im)); $("#filmstrip").append(makeThumb(im)); }
+  $("#emptyMsg").hidden = true;
+  refreshSelectionUI();
+}
+async function pollMovie() {
+  clearTimeout(movieTimer); movieTimer = null;
+  let s; try { s = await api("GET", "/api/movies/status"); } catch { movieTimer = setTimeout(pollMovie, 1500); return; }
+  const bar = $("#movieQueue");
+  if (s.running) {
+    bar.hidden = false;
+    $("#mqLbl").textContent = `Extracting frame ${Math.min(s.saved + 1, s.expected || Infinity).toLocaleString()}${s.expected ? ` of ${s.expected.toLocaleString()}` : ""}`;
+    const b = $("#mqBar"); if (s.total > 0) { b.max = s.total; b.value = s.done; } else b.removeAttribute("value");
+    if (s.added !== movieAdded) {
+      movieAdded = s.added;
+      if (s.lib === state.libId) { try { await appendNewImages(); await loadLibs(); } catch { /* try again next tick */ } }
+    }
+    movieTimer = setTimeout(pollMovie, 700);
+    return;
+  }
+  const wasShowing = !bar.hidden || movieAdded >= 0;
+  bar.hidden = true; movieAdded = -1;
+  if (!wasShowing || !s.finished) return;
+  try { await loadLibs(); if (s.lib === state.libId) await appendNewImages(); } catch { /* ignore */ }
+  if (s.error) toast(`Movie import: ${s.error}`, true);
+  else if (s.cancelled) toast(`Stopped extracting frames — ${s.added.toLocaleString()} added to the library`);
+  else toast(`Added ${s.added.toLocaleString()} frame${s.added === 1 ? "" : "s"} from ${s.name}`);
+}
+
+/* ---------- import movie frames ---------- */
+async function openMovieImport() {
+  if (!state.libId) return toast("Create or choose a library first", true);
+  const dlg = $("#movieDlg");
+  const m = { path: "", info: null, dest: store.get("movieDest", state.meta.movie_dir), running: false };
+  const fmtTime = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  const every = () => $("#mvMode").value === "interval";
+  const estimate = () => {
+    const i = m.info; if (!i || !i.frames) return null;
+    if (!every()) return i.frames;
+    const step = Math.max(1, Math.round((i.fps || 25) * (+$("#mvSec").value || 0)));
+    return Math.floor((i.frames - 1) / step) + 1;
+  };
+  const refresh = () => {
+    $("#mvSecRow").hidden = !every();
+    $("#mvPath").value = m.path; $("#mvDest").value = m.dest;
+    const i = m.info;
+    $("#mvInfo").textContent = !m.path ? "No movie chosen" : !i ? "Reading movie…" :
+      `${i.width}×${i.height} · ${i.fps} fps · ${i.duration ? fmtTime(i.duration) : "unknown length"}${i.frames ? ` · ${i.frames.toLocaleString()} frames` : ""}`;
+    const n = estimate();
+    $("#mvEst").textContent = n === null ? "" : `About ${n.toLocaleString()} image${n === 1 ? "" : "s"} will be added to this library.`;
+    $("#mvGo").disabled = m.running || !i || (every() && !(+$("#mvSec").value > 0));
+  };
+  $("#mvErr").hidden = true;
+  $("#mvMode").value = "interval"; $("#mvSec").value = store.get("movieSec", 1); $("#mvFmt").value = "jpeg";
+  m.path = ""; refresh();
+
+  $("#mvChoose").onclick = async () => {
+    const r = await pickFs({ mode: "files", title: "Choose a movie file", types: "video", okText: "Choose", start: store.get("movieDir") });
+    if (!r?.paths.length) return;
+    m.path = r.paths[0]; m.info = null; store.set("movieDir", m.path); refresh();
+    try { m.info = await api("POST", "/api/movies/probe", { path: m.path }); }
+    catch (e) { m.path = ""; $("#mvErr").textContent = e.message; $("#mvErr").hidden = false; }
+    refresh();
+  };
+  $("#mvDestBtn").onclick = async () => {
+    const r = await pickFs({ mode: "dir", title: "Choose where to save the frames", start: m.dest });
+    if (r?.paths.length) { m.dest = r.paths[0]; store.set("movieDest", m.dest); refresh(); }
+  };
+  $("#mvMode").onchange = $("#mvSec").oninput = () => { if (+$("#mvSec").value > 0) store.set("movieSec", +$("#mvSec").value); refresh(); };
+
+  $("#mvGo").onclick = async () => {
+    const n = estimate();
+    if (!every() && n && n > 500 && !await confirmModal({ title: `Extract ${n.toLocaleString()} frames?`,
+      message: "That is a lot of images. It will take a while and use plenty of disk space. Consider extracting a frame every few seconds instead.", okText: "Extract all" })) return;
+    $("#mvErr").hidden = true; $("#mvGo").disabled = true;
+    try {
+      await api("POST", "/api/movies/extract", { path: m.path, mode: every() ? "interval" : "all", seconds: +$("#mvSec").value,
+        format: $("#mvFmt").value, dest: m.dest, lib: state.libId });
+    } catch (e) { $("#mvErr").textContent = e.message; $("#mvErr").hidden = false; $("#mvGo").disabled = false; return; }
+    dlg.close();
+    movieAdded = 0; pollMovie();  // from now on, report when it finishes
+  };
+  $("#mvCancel").onclick = () => dlg.close();
+  dlg.showModal();
+}
+
 /* ---------- wiring ---------- */
 function wire() {
   // Tabs must sit on the header's bottom edge, so when the header wraps (narrow window, export bar showing) they drop to the last row.
@@ -1663,6 +1778,8 @@ function wire() {
   $("#addFolder").onclick = async () => addPaths(await pickFs({ mode: "folder", title: "Add folder" }));
   $("#tabLib").onclick = () => setView("library");
   $("#tabDev").onclick = () => setView("develop");
+  $("#importMovie").onclick = openMovieImport;
+  $("#mqStop").onclick = async () => { try { await api("POST", "/api/movies/cancel", {}); } catch (e) { toast(e.message, true); } };
   $("#selAll").onclick = () => { state.sel = new Set(state.images.map(i => i.id)); refreshSelectionUI(); };
   $("#removeSel").onclick = removeSelected;
   $("#thumbSize").oninput = e => { $("#grid").style.setProperty("--ts", e.target.value + "px"); store.set("ts", +e.target.value); };
@@ -1815,5 +1932,6 @@ function wire() {
     routing = false;
     syncHash("replace");
     pollQueue();  // pick up an export that is already running
+    pollMovie();  // ...and a movie import
   } catch (e) { toast("Failed to start: " + e.message, true); }
 })();

@@ -8,6 +8,11 @@ export the finished images. Nothing is uploaded anywhere - the server only liste
 
 - **Libraries** - group photos into named libraries, with optional location (city, region, country). Copy images
   between libraries, mark featured images, and browse with thumbnails.
+- **File browser** - Add files / Add folder open a browser for any folder on the computer, with a files or
+  thumbnail view, a favorites list (kept in the browser), and "show all files" / sub-folder options.
+- **Import movie frames** - pull still frames out of a movie file (every frame, or one every N seconds, as JPEG or
+  PNG). Extraction runs in the background; frames are added to the library as they are written and a progress bar
+  with a stop button floats at the bottom of the Library window.
 - **Wide format support**
   - RAW: CR2/CR3, NEF/NRW, ARW/SR2/SRF, DNG, ORF, RAF, RW2, PEF, and many more (decoded with LibRaw via `rawpy`)
   - Standard: JPEG, PNG, TIFF, BMP, WebP, GIF, JPEG 2000, and HEIC/HEIF/AVIF
@@ -15,14 +20,23 @@ export the finished images. Nothing is uploaded anywhere - the server only liste
   never modified.
 - **Develop controls**
   - *White Balance*: Temperature, Tint
-  - *Tone*: Exposure, Contrast, Highlights, Midtones, Shadows
-  - *Color*: Saturation, Vibrance
+  - *Tone*: Exposure, Contrast, Highlights, Midtones, Shadows, Whites, Blacks
+  - *Presence*: Texture, Clarity, Dehaze, Vibrance, Saturation
   - *Color Balance*: hue and amount for Shadows, Midtones and Highlights
   - *Sharpening*: Amount, Radius
   - *Noise Reduction*: Luminance, Color
 - **Fast previews** - edits render against a cached 1800 px proxy, with on-demand full-resolution region rendering
   for zooming.
-- **Batch settings** - apply settings to many images at once.
+- **Batch settings** - copy and paste settings, or apply them to many images at once.
+- **Presets** - save an image's settings as a named preset and apply it to the selected images from the Presets
+  dropdown in the Develop panel.
+- **Slider strength** - every slider has a cog that opens a strength multiplier (0.01x to 3x), so you can make any
+  adjustment more or less pronounced. Temperature and tint curves are fitted to Lightroom output.
+- **Image actions** - right-click or use the Actions menu to copy settings, copy the edited image to the clipboard,
+  feature an image, add images to another library, remove them from the library, or delete the files from disk
+  (permanent; asks first).
+- **Interface settings** - the Settings button holds browser-side options, such as pan momentum (velocity and
+  damping) and how often the zoomed view refreshes while dragging.
 - **Export** - full-resolution export to JPEG, PNG, TIFF (8/16-bit) or WebP, with quality, file suffix and
   long-edge resize options, plus progress and cancel.
 - **Installable** - includes a web app manifest and icons, so Chrome/Edge can install it as its own app window.
@@ -39,6 +53,9 @@ export the finished images. Nothing is uploaded anywhere - the server only liste
 
 Python packages (installed automatically into a private `.venv` from `requirements.txt`):
 `flask`, `numpy`, `pillow`, `pillow-heif`, `opencv-python-headless`, `rawpy`.
+
+Importing movie frames decodes video with the FFmpeg built into the standard `opencv-python-headless` wheels, so no
+separate FFmpeg install is needed.
 
 If a package has no prebuilt wheel for your Python version, install Python 3.12 and run setup again.
 
@@ -115,9 +132,12 @@ holds the port, Tonelith tells you and exits; pick a different port with `--port
 
 - `data/tonelith.db` - the SQLite catalog (libraries, image references, develop settings)
 - `data/temp/` - proxy and thumbnail caches (can be cleared from within the app)
+- `data/prefs.json` - app-wide slider strength multipliers (created when you change one)
 - `exports/` - default export destination
+- `movie_frames/` - default destination for frames extracted from movies (a new folder per import)
 
-All of these are created on first run and are excluded from git.
+All of these are created on first use and are excluded from git. Browser-side preferences (interface settings,
+favorite folders, which panel sections are open) are stored in the browser's local storage, not in the app folder.
 
 ## Project layout
 
@@ -127,6 +147,7 @@ All of these are created on first run and are excluded from git.
 ├── tonelith/
 │   ├── db.py           SQLite catalog
 │   ├── imaging.py      Decoding, develop pipeline, previews, export
+│   ├── movies.py       Extracting still frames from movie files
 │   ├── settings.py     Develop-settings schema shared by server and UI
 │   └── portutil.py     Port checks and replacing a stale server
 ├── static/             Browser UI (index.html, app.js, style.css, icons, manifest)

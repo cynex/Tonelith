@@ -220,6 +220,15 @@ def delete_preset(preset_id):
         con.execute("DELETE FROM presets WHERE id = ?", (preset_id,))
 
 
+def remove_paths(paths):
+    """Delete every catalog entry (in any library) that points at one of these files."""
+    n = 0
+    with connect() as con:
+        for p in paths:
+            n += con.execute("DELETE FROM images WHERE path = ?", (p,)).rowcount
+    return n
+
+
 def path_in_use(path):
     with connect() as con:
         return con.execute("SELECT 1 FROM images WHERE path = ? LIMIT 1", (path,)).fetchone() is not None

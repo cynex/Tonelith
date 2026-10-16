@@ -14,11 +14,12 @@ from urllib.parse import urlparse
 from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
-from tonelith import db, imaging, portutil
+from tonelith import db, imaging, movies, portutil
 from tonelith import settings as S
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_EXPORT_DIR = os.path.join(ROOT, "exports")
+DEFAULT_MOVIE_DIR = os.path.join(ROOT, "movie_frames")
 INFO_FILE = os.path.join(os.environ.get("TONELITH_INFO") or os.path.join(ROOT, "info"), "application_info.html")
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
@@ -82,7 +83,7 @@ def static_files(name):
 @app.get("/api/meta")
 def meta():
     return jsonify(schema=S.SCHEMA, defaults=S.DEFAULTS, proxy=imaging.PROXY_LONG,
-                   formats=list(imaging.FORMATS), export_dir=DEFAULT_EXPORT_DIR,
+                   formats=list(imaging.FORMATS), export_dir=DEFAULT_EXPORT_DIR, movie_dir=DEFAULT_MOVIE_DIR,
                    raw_ext=sorted(imaging.RAW_EXT), std_ext=sorted(imaging.STD_EXT),
                    raw_available=imaging.rawpy is not None, cache=imaging.cache_stats(),
                    strength=imaging.STRENGTH, strength_range=imaging.STRENGTH_RANGE,
@@ -239,6 +240,27 @@ def remove_preset(preset_id):
     return jsonify(db.presets())
 
 
+@app.post("/api/images/delete-files")
+def delete_image_files():
+    """Permanently delete the image files from disk, and every catalog entry that points at them."""
+    ids = [int(i) for i in (request.json or {}).get("ids", [])]
+    paths = {im["path"] for im in map(db.image, ids) if im}
+    gone, failed = [], []
+    for p in sorted(paths):
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass  # already gone: just tidy the catalog
+        except OSError as e:
+            failed.append(f"{os.path.basename(p)}: {e.strerror or e}")
+            continue
+        gone.append(p)
+    db.remove_paths(gone)
+    for p in gone:
+        imaging.purge_path(p)
+    return jsonify(deleted=len(gone), failed=failed)
+
+
 # ---- settings -------------------------------------------------------------------
 
 @app.put("/api/images/<int:iid>/settings")
@@ -354,6 +376,7 @@ def fs_list_roots():
 def fs_list():
     path = request.args.get("path", "")
     show_all = request.args.get("all") == "1"
+    want_video = request.args.get("types") == "video"  # list movie files instead of images
     if not path:
         return fs_list_roots()
     path = os.path.abspath(os.path.expanduser(path))
@@ -372,7 +395,7 @@ def fs_list():
                     is_dir = e.is_dir()
                     if e.name.startswith(".") and not show_all:
                         continue
-                    sup = (not is_dir) and imaging.is_supported(e.name)
+                    sup = (not is_dir) and (movies.is_video(e.name) if want_video else imaging.is_supported(e.name))
                     if not is_dir and not sup and not show_all:
                         continue
                     entries.append(dict(name=e.name, path=e.path, dir=is_dir, supported=sup,
@@ -398,6 +421,61 @@ def fs_thumb():
     except Exception as e:  # noqa: BLE001
         return _render_error(e)
     return send_file(out, mimetype="image/jpeg", max_age=31536000)
+
+
+# ---- movie frames ---------------------------------------------------------------
+
+def _movie_path(body):
+    path = os.path.abspath(os.path.expanduser(str(body.get("path", ""))))
+    if not os.path.isfile(path):
+        abort(404, "Movie file not found")
+    return path
+
+
+@app.post("/api/movies/probe")
+def movie_probe():
+    try:
+        return jsonify(movies.probe(_movie_path(request.json or {})))
+    except ValueError as e:
+        return fail(str(e), 422)
+
+
+@app.post("/api/movies/extract")
+def movie_extract():
+    body = request.json or {}
+    path = _movie_path(body)
+    every = None
+    if body.get("mode") == "interval":
+        try:
+            every = float(body.get("seconds"))
+        except (TypeError, ValueError):
+            return fail("Enter how many seconds between frames")
+        if not math.isfinite(every) or every <= 0:
+            return fail("Seconds between frames must be more than 0")
+    base = os.path.abspath(os.path.expanduser(body.get("dest") or DEFAULT_MOVIE_DIR))
+    try:
+        lib_id = int(body.get("lib"))
+    except (TypeError, ValueError):
+        return fail("No library to add the frames to")
+    if not any(l["id"] == lib_id for l in db.libraries()):
+        return fail("Library not found", 404)
+    try:
+        dest = movies.start(path, every, "png" if body.get("format") == "png" else "jpeg", base,
+                            on_batch=lambda files: db.add_images(lib_id, files), lib=lib_id)
+    except (ValueError, RuntimeError, OSError) as e:
+        return fail(str(e), 409 if isinstance(e, RuntimeError) else 422)
+    return jsonify(dest=dest)
+
+
+@app.get("/api/movies/status")
+def movie_status():
+    return jsonify(movies.status())
+
+
+@app.post("/api/movies/cancel")
+def movie_cancel():
+    movies.cancel()
+    return jsonify(ok=True)
 
 
 # ---- export ---------------------------------------------------------------------
