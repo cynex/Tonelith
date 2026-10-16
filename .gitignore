@@ -45,3 +45,7 @@ desktop.ini
 
 # Local environment / secrets
 .env
+
+# Frames extracted from movies
+movie_frames/
+**/movie_frames/
