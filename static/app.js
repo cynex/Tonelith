@@ -306,6 +306,7 @@ function buildPanel() {
   for (const name of sections) {
     const sec = document.createElement("div");
     sec.className = "sec";
+    sec.dataset.name = name;
     sec.innerHTML = `<div class="hd"><span class="ttl"><span class="tg"></span>${name}</span><span class="rs" title="Reset section">Reset</span></div>`;
     if (!openSections().includes(name)) sec.classList.add("collapsed");
     $(".hd", sec).addEventListener("click", e => {
@@ -315,7 +316,9 @@ function buildPanel() {
       store.set("openSections", sec.classList.contains("collapsed") ? rest : [...rest, name]);
     });
     for (const p of state.meta.schema.filter(p => p.section === name)) {
+      if (p.kind === "toggle") { sec.appendChild(mixControls(p)); continue; }
       const row = document.createElement("div");
+      if (p.out) row.dataset.out = p.out;
       row.className = "row" + (p.kind === "hue" ? " hue" : GRADS[p.key] ? " grad" : "");
       row.dataset.key = p.key;
       if (p.kind === "hue") row.style.setProperty("--g", HUE_GRAD);
@@ -323,7 +326,7 @@ function buildPanel() {
       row.innerHTML = `<label title="Double-click to reset">${p.label}</label>
         <input type="range" min="${p.min}" max="${p.max}" step="${p.step}">
         <input type="number" min="${p.min}" max="${p.max}" step="${p.step}">`;
-      if (p.kind !== "hue") {
+      if (p.kind === "slider") {
         const cog = document.createElement("button");
         cog.className = "cog"; cog.type = "button"; cog.textContent = "⚙"; cog.title = `${p.label} strength…`;
         cog.addEventListener("click", () => openStrength(p));
@@ -340,6 +343,27 @@ function buildPanel() {
     }
     host.appendChild(sec);
   }
+}
+/* Channel Mixer: pick the output channel to edit (UI only) and switch to the single Gray row with Monochrome. */
+let mixOut = "Red";
+function mixControls(p) {
+  const row = document.createElement("div");
+  row.className = "row mixctl"; row.dataset.key = p.key;
+  row.innerHTML = `<label>Output Channel <select>${["Red", "Green", "Blue"].map(c => `<option>${c}</option>`).join("")}<option hidden>Gray</option></select></label>
+    <label class="chk"><input type="checkbox"> Monochrome</label>`;
+  const sel = $("select", row), chk = $("input", row);
+  sel.addEventListener("change", () => { mixOut = sel.value; updateMixView(); });
+  chk.addEventListener("change", () => { setValue(p.key, chk.checked ? 1 : 0); updateMixView(); });
+  row.addEventListener("dblclick", e => e.stopPropagation());
+  return row;
+}
+function updateMixView() {
+  const ctl = $("#sliders .mixctl"); if (!ctl) return;
+  const im = focusImage(), mono = !!(im && im.settings.mix_mono);
+  $("input", ctl).checked = mono;
+  const sel = $("select", ctl);
+  sel.disabled = mono; sel.value = mono ? "Gray" : mixOut;
+  $$("#sliders .row[data-out]").forEach(r => r.classList.toggle("off", r.dataset.out !== sel.value));
 }
 /* Per-slider strength multiplier (app-wide, stored on the server). */
 function openStrength(p) {
@@ -368,10 +392,12 @@ function syncPanel() {
   $$("#sliders .row").forEach(row => {
     const p = state.meta.schema.find(x => x.key === row.dataset.key);
     const v = im ? im.settings[p.key] : p.default;
+    if (p.kind === "toggle") return;
     const [range, num] = $$("input", row);
     range.value = v; num.value = v;
     row.classList.toggle("changed", v !== p.default);
   });
+  updateMixView();
   renderImgInfo(im, null);
   if (im) getInfo(im).then(i => {
     if (state.focus !== im.id) return;
@@ -410,8 +436,10 @@ function setValue(key, v) {
   const p = state.meta.schema.find(x => x.key === key);
   im.edited = JSON.stringify(im.settings) !== JSON.stringify(state.meta.defaults);
   const row = $(`#sliders .row[data-key="${key}"]`);
-  const [range, num] = $$("input", row);
-  range.value = v; num.value = v; row.classList.toggle("changed", v !== p.default);
+  if (p.kind !== "toggle") {
+    const [range, num] = $$("input", row);
+    range.value = v; num.value = v; row.classList.toggle("changed", v !== p.default);
+  }
   busyWanted = true; scheduleRender(); queueSave(im);
 }
 function resetKeys(keys) {

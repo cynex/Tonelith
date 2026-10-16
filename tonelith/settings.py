@@ -5,11 +5,23 @@ import math
 
 _WB, _TONE, _PRES, _BAL = "White Balance", "Tone", "Presence", "Color Balance"
 _SHARP, _NR = "Sharpening", "Noise Reduction"
+_MIX = "Channel Mixer"
 
 
-def _s(key, label, section, lo, hi, step, default=0, kind="slider"):
+def _s(key, label, section, lo, hi, step, default=0, kind="slider", **extra):
     return dict(key=key, label=label, section=section, min=lo, max=hi,
-                step=step, default=default, kind=kind)
+                step=step, default=default, kind=kind, **extra)
+
+
+def _mix_rows():
+    """Photoshop-style Channel Mixer: for each output channel, how much of R, G, B (%) plus a constant (%)."""
+    rows = [_s("mix_mono", "Monochrome", _MIX, 0, 1, 1, 0, "toggle")]
+    for out, name, own in (("r", "Red", 0), ("g", "Green", 1), ("b", "Blue", 2), ("k", "Gray", None)):
+        for i, (src, label) in enumerate((("r", "Red"), ("g", "Green"), ("b", "Blue"))):
+            default = (40, 40, 20)[i] if out == "k" else (100 if i == own else 0)
+            rows.append(_s(f"mix_{out}{src}", label, _MIX, -200, 200, 1, default, "mix", out=name))
+        rows.append(_s(f"mix_{out}c", "Constant", _MIX, -100, 100, 1, 0, "mix", out=name))
+    return rows
 
 
 SCHEMA = [
@@ -36,6 +48,8 @@ SCHEMA = [
     _s("mid_amt", "Midtones Amount", _BAL, 0, 100, 1),
     _s("high_hue", "Highlights Hue", _BAL, 0, 360, 1, 40, "hue"),
     _s("high_amt", "Highlights Amount", _BAL, 0, 100, 1),
+
+    *_mix_rows(),
 
     _s("sharp_amount", "Amount", _SHARP, 0, 150, 1),
     _s("sharp_radius", "Radius", _SHARP, 0.5, 3, 0.1, 1.0),

@@ -281,7 +281,7 @@ _WB_TINT = {  # -100 = green, +100 = magenta
 STRENGTH_RANGE = (0.01, 3.0)
 STRENGTH_DEFAULTS = {"texture": 0.25, "dehaze": 0.5}  # everything else defaults to 1
 PREFS_PATH = os.path.join(DATA_DIR, "prefs.json")
-_TUNABLE = [p for p in S.SCHEMA if p["kind"] != "hue"]
+_TUNABLE = [p for p in S.SCHEMA if p["kind"] == "slider"]
 
 
 def default_strength(key):
@@ -368,6 +368,22 @@ def _dehaze(x, d, scale):
     return np.clip((x - _HAZE_LIGHT) / t + _HAZE_LIGHT, 0, 1).astype(np.float32)
 
 
+def _channel_mix(x, s):
+    """Photoshop's Channel Mixer: each output channel = a*R + b*G + c*B + constant (all in %), on encoded values.
+    Monochrome uses the Gray row for all three output channels."""
+    if s["mix_mono"]:
+        row = [[s[f"mix_k{c}"] for c in "rgb"]] * 3
+        const = [s["mix_kc"]] * 3
+    else:
+        row = [[s[f"mix_{o}{c}"] for c in "rgb"] for o in "rgb"]
+        const = [s[f"mix_{o}c"] for o in "rgb"]
+    m = np.array(row, np.float32) / 100
+    if not s["mix_mono"] and np.array_equal(m, np.eye(3, dtype=np.float32)) and not any(const):
+        return x
+    out = x @ m.T + np.array(const, np.float32) / 100
+    return np.clip(out, 0, 1).astype(np.float32)
+
+
 def _presence_pad(s):
     """Extra overlap (px) needed around a strip/region so the wide blurs above don't show seams."""
     return 110 if (s.get("clarity") or s.get("dehaze")) else 0
@@ -450,6 +466,8 @@ def render(img16, s, scale=1.0, bits=8):
         f = np.maximum(0, 1 + sa + vi * (1 - cur))[..., None]
         x = y + (x - y) * f
     np.clip(x, 0, 1, out=x)
+
+    x = _channel_mix(x, s)
 
     # Sharpen luminance (unsharp mask).
     if s["sharp_amount"] > 0:
